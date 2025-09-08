@@ -242,7 +242,7 @@ def initialize_storage():
             "phone_number": "0812345678",
             "email": "admin@backend-pwa.com",
             "full_name": "System Administrator",
-            "hashed_password": "$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LeiX8vKv8Y7uJ8j2C",  # "admin"
+            "password": "admin123",
             "role": "admin",
             "is_admin": True,
             "is_active": True
