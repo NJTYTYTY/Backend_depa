@@ -23,9 +23,8 @@ except Exception as e:
 USERS_FILE = STORAGE_DIR / "users.json"
 PONDS_FILE = STORAGE_DIR / "ponds.json"
 SENSOR_READINGS_FILE = STORAGE_DIR / "sensor_readings.json"
+SENSOR_BATCHES_FILE = STORAGE_DIR / "sensor_batches.json"
 MEDIA_ASSETS_FILE = STORAGE_DIR / "media_assets.json"
-INSIGHTS_FILE = STORAGE_DIR / "insights.json"
-CONTROL_LOGS_FILE = STORAGE_DIR / "control_logs.json"
 
 class JSONStorage:
     """JSON-based data storage class"""
@@ -203,6 +202,114 @@ class SensorReadingStorage(JSONStorage):
         readings.append(reading_data)
         JSONStorage._write_json(SENSOR_READINGS_FILE, readings)
         return reading_data
+    
+    @staticmethod
+    def get_latest_readings(pond_id: int) -> List[Dict[str, Any]]:
+        """Get latest sensor readings for a pond by sensor type"""
+        readings = SensorReadingStorage.get_by_pond(pond_id)
+        
+        # Group by sensor_type and get latest for each
+        latest_by_type = {}
+        for reading in readings:
+            sensor_type = reading.get('sensor_type')
+            if sensor_type:
+                if sensor_type not in latest_by_type:
+                    latest_by_type[sensor_type] = reading
+                else:
+                    # Compare timestamps to get the latest
+                    current_time = reading.get('timestamp', '')
+                    existing_time = latest_by_type[sensor_type].get('timestamp', '')
+                    if current_time > existing_time:
+                        latest_by_type[sensor_type] = reading
+        
+        return list(latest_by_type.values())
+
+class SensorBatchStorage(JSONStorage):
+    """Sensor batch data storage operations - OPTIMIZED for bulk sensor data"""
+    
+    @staticmethod
+    def get_all() -> List[Dict[str, Any]]:
+        """Get all sensor batches"""
+        return JSONStorage._read_json(SENSOR_BATCHES_FILE)
+    
+    @staticmethod
+    def get_by_pond(pond_id: int) -> List[Dict[str, Any]]:
+        """Get sensor batches by pond ID"""
+        batches = SensorBatchStorage.get_all()
+        return [batch for batch in batches if batch.get('pond_id') == pond_id]
+    
+    @staticmethod
+    def get_by_id(batch_id: str) -> Optional[Dict[str, Any]]:
+        """Get sensor batch by ID"""
+        batches = SensorBatchStorage.get_all()
+        return next((batch for batch in batches if batch.get('id') == batch_id), None)
+    
+    @staticmethod
+    def create(batch_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create new sensor batch"""
+        batches = SensorBatchStorage.get_all()
+        batch_data['created_at'] = datetime.utcnow().isoformat()
+        
+        batches.append(batch_data)
+        JSONStorage._write_json(SENSOR_BATCHES_FILE, batches)
+        return batch_data
+    
+    @staticmethod
+    def get_latest_batch(pond_id: int) -> Optional[Dict[str, Any]]:
+        """Get latest sensor batch for a pond (always get the last array element)"""
+        batches = SensorBatchStorage.get_by_pond(pond_id)
+        if not batches:
+            return None
+        
+        # Always get the last element in the array (most recent)
+        latest = batches[-1]
+        return latest
+    
+    @staticmethod
+    def get_latest_batch(pond_id: int) -> Optional[Dict[str, Any]]:
+        """Get latest sensor batch for a pond WITHOUT removing it from storage"""
+        all_batches = SensorBatchStorage.get_all()
+        pond_batches = [batch for batch in all_batches if batch.get('pond_id') == pond_id]
+        
+        if not pond_batches:
+            return None
+        
+        # Get the last batch for this pond
+        latest_batch = pond_batches[-1]
+        
+        # DON'T remove the batch - just return it
+        # This allows multiple reads of the same data
+        
+        return latest_batch
+    
+    @staticmethod
+    def get_latest_sensors(pond_id: int) -> Dict[str, Any]:
+        """Get latest sensor values for a pond (optimized for frontend)"""
+        latest_batch = SensorBatchStorage.get_latest_batch(pond_id)
+        if not latest_batch:
+            return {}
+        
+        # Extract sensors data in frontend-friendly format
+        sensors = latest_batch.get('sensors', {})
+        result = {}
+        
+        for sensor_type, data in sensors.items():
+            result[sensor_type] = {
+                'value': data.get('value'),
+                'status': data.get('status'),
+                'type': data.get('type'),
+                'timestamp': latest_batch.get('timestamp')
+            }
+        
+        return result
+    
+    @staticmethod
+    def get_batch_history(pond_id: int, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get batch history for a pond"""
+        batches = SensorBatchStorage.get_by_pond(pond_id)
+        
+        # Return the last N batches (most recent first)
+        return batches[-limit:] if len(batches) >= limit else batches
 
 class MediaAssetStorage(JSONStorage):
     """Media asset data storage operations"""
@@ -251,7 +358,7 @@ def initialize_storage():
         logging.info("Created default admin user")
     
     # Ensure all storage directories exist
-    for file_path in [USERS_FILE, PONDS_FILE, SENSOR_READINGS_FILE, MEDIA_ASSETS_FILE, INSIGHTS_FILE, CONTROL_LOGS_FILE]:
+    for file_path in [USERS_FILE, PONDS_FILE, SENSOR_READINGS_FILE, SENSOR_BATCHES_FILE, MEDIA_ASSETS_FILE]:
         if not file_path.exists():
             JSONStorage._write_json(file_path, [])
             logging.info(f"Created {file_path}")
