@@ -310,6 +310,41 @@ class SensorBatchStorage(JSONStorage):
         
         # Return the last N batches (most recent first)
         return batches[-limit:] if len(batches) >= limit else batches
+    
+    @staticmethod
+    def clear_all() -> bool:
+        """Clear all sensor batch data"""
+        return JSONStorage._write_json(SENSOR_BATCHES_FILE, [])
+    
+    @staticmethod
+    def clear_by_pond(pond_id: int) -> bool:
+        """Clear sensor batch data for a specific pond"""
+        all_batches = SensorBatchStorage.get_all()
+        filtered_batches = [batch for batch in all_batches if batch.get('pond_id') != pond_id]
+        return JSONStorage._write_json(SENSOR_BATCHES_FILE, filtered_batches)
+    
+    @staticmethod
+    def delete_latest_batch(pond_id: int) -> Optional[Dict[str, Any]]:
+        """Delete the latest sensor batch for a specific pond and return the deleted batch"""
+        all_batches = SensorBatchStorage.get_all()
+        pond_batches = [batch for batch in all_batches if batch.get('pond_id') == pond_id]
+        
+        if not pond_batches:
+            return None
+        
+        # Get the latest batch (last in the list)
+        latest_batch = pond_batches[-1]
+        
+        # Remove the latest batch from all batches
+        remaining_batches = [batch for batch in all_batches if batch.get('id') != latest_batch.get('id')]
+        
+        # Write back to file
+        success = JSONStorage._write_json(SENSOR_BATCHES_FILE, remaining_batches)
+        
+        if success:
+            return latest_batch
+        else:
+            return None
 
 class MediaAssetStorage(JSONStorage):
     """Media asset data storage operations"""

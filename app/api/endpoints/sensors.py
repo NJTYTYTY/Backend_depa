@@ -706,5 +706,138 @@ async def get_latest_sensor_data_public(pond_id: int):
             detail=f"Failed to get latest sensor data: {str(e)}"
         )
 
+# Admin endpoint to clear all sensor batch data
+@router.delete("/admin/clear-all-batches", response_model=dict)
+async def clear_all_sensor_batches(
+    current_user: dict = Depends(get_admin_user),
+):
+    """
+    Clear all sensor batch data (admin only)
+    """
+    try:
+        # Clear all batch data
+        batch_storage = SensorBatchStorage()
+        success = batch_storage.clear_all()
+        
+        if success:
+            logger.info(f"All sensor batch data cleared by admin user {current_user['id']}")
+            return {
+                "success": True,
+                "message": "All sensor batch data cleared successfully",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to clear sensor batch data"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to clear sensor batch data: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to clear sensor batch data"
+        )
+
+# Admin endpoint to clear sensor batch data for a specific pond
+@router.delete("/admin/clear-batches/{pond_id}", response_model=dict)
+async def clear_sensor_batches_for_pond(
+    pond_id: int,
+    current_user: dict = Depends(get_admin_user),
+):
+    """
+    Clear sensor batch data for a specific pond (admin only)
+    """
+    try:
+        # Convert pond_id to int if it's a string
+        try:
+            pond_id = int(pond_id)
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="pondId must be a valid integer"
+            )
+        
+        # Clear batch data for specific pond
+        batch_storage = SensorBatchStorage()
+        success = batch_storage.clear_by_pond(pond_id)
+        
+        if success:
+            logger.info(f"Sensor batch data for pond {pond_id} cleared by admin user {current_user['id']}")
+            return {
+                "success": True,
+                "message": f"Sensor batch data for pond {pond_id} cleared successfully",
+                "pondId": pond_id,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to clear sensor batch data for pond"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to clear sensor batch data for pond {pond_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to clear sensor batch data for pond"
+        )
+
+# Endpoint to delete the latest batch for a specific pond
+@router.delete("/batches/{pond_id}/latest", response_model=dict)
+async def delete_latest_sensor_batch(
+    pond_id: int,
+    current_user: dict = Depends(get_current_active_user),
+):
+    """
+    Delete the latest sensor batch for a specific pond
+    """
+    try:
+        # Convert pond_id to int if it's a string
+        try:
+            pond_id = int(pond_id)
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="pondId must be a valid integer"
+            )
+        
+        # Verify pond access
+        verify_sensor_data_access(pond_id, current_user)
+        
+        # Delete latest batch for this pond
+        batch_storage = SensorBatchStorage()
+        deleted_batch = batch_storage.delete_latest_batch(pond_id)
+        
+        if deleted_batch:
+            logger.info(f"Latest sensor batch for pond {pond_id} deleted by user {current_user['id']}")
+            return {
+                "success": True,
+                "message": f"Latest sensor batch for pond {pond_id} deleted successfully",
+                "deletedBatch": deleted_batch,
+                "pondId": pond_id,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        else:
+            return {
+                "success": False,
+                "message": f"No sensor batch data found for pond {pond_id}",
+                "pondId": pond_id,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete latest sensor batch for pond {pond_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete latest sensor batch"
+        )
+
 
         
