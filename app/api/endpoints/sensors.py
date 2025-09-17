@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import logging
 
 from ...storage import SensorReadingStorage, SensorBatchStorage, PondStorage
+from ...storage.graph_storage import GraphDataStorage
 from ...schemas.sensor import (
     SensorDataCreate, 
     SensorDataUpdate, 
@@ -22,6 +23,7 @@ from ...schemas.sensor import (
     SensorDataBulk,
     SensorDataBulkResponse
 )
+from ...schemas.graph import GraphDataResponse, GraphDataPoint, MultiSensorGraphResponse
 from ...api.dependencies import (
     get_current_active_user,
     get_admin_user
@@ -838,6 +840,156 @@ async def delete_latest_sensor_batch(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete latest sensor batch"
         )
+
+
+# Simple graph endpoint for testing
+@router.get("/graph-simple/{pond_id}", response_model=dict)
+async def get_sensor_graph_data_simple(pond_id: int, hours: int = 24):
+    """
+    Get sensor data formatted for graph visualization (simple version)
+    """
+    try:
+        # Get graph data using GraphDataStorage
+        graph_storage = GraphDataStorage()
+        batches = graph_storage.get_by_pond(pond_id)
+        
+        # Debug logging
+        logging.info(f"API: Found {len(batches)} batches for pond {pond_id}")
+        if batches:
+            logging.info(f"API: First batch keys: {list(batches[0].keys())}")
+            logging.info(f"API: First batch sensors: {list(batches[0].get('sensors', {}).keys())}")
+            # Debug: Check actual sensor values
+            for sensor_type in ['DO', 'pH', 'temperature', 'shrimpSize', 'minerals']:
+                if sensor_type in batches[0].get('sensors', {}):
+                    sensor_data = batches[0]['sensors'][sensor_type]
+                    logging.info(f"API: {sensor_type} data: {sensor_data}")
+                else:
+                    logging.info(f"API: {sensor_type} not found in sensors")
+        
+        # Take only the last N batches based on hours parameter
+        batches = batches[-hours:] if len(batches) > hours else batches
+        
+        # Process data for each sensor type
+        sensors_data = {}
+        numeric_sensors = ['DO', 'pH', 'temperature', 'shrimpSize', 'minerals']
+        
+        for sensor_type in numeric_sensors:
+            # Determine unit first (outside of if-else)
+            unit = None
+            if sensor_type == 'temperature':
+                unit = '°C'
+            elif sensor_type == 'shrimpSize':
+                unit = 'cm'
+            elif sensor_type == 'minerals':
+                unit = 'kg'
+            elif sensor_type == 'DO':
+                unit = 'mg/L'
+            elif sensor_type == 'pH':
+                unit = 'pH'
+            
+            data_points = []
+            values = []
+            
+            for batch in batches:
+                if sensor_type in batch.get('sensors', {}):
+                    sensor_data = batch['sensors'][sensor_type]
+                    if sensor_data.get('type') == 'numeric':
+                        try:
+                            # Simple timestamp parsing
+                            timestamp_str = batch.get('timestamp', '')
+                            if timestamp_str:
+                                if timestamp_str.endswith('Z'):
+                                    timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                                else:
+                                    timestamp = datetime.fromisoformat(timestamp_str)
+                            else:
+                                timestamp = datetime.now()
+                            
+                            value = float(sensor_data.get('value', 0.0))
+                            status = sensor_data.get('status', 'green')
+                            
+                            data_points.append({
+                                'timestamp': timestamp.isoformat(),
+                                'value': value,
+                                'status': status
+                            })
+                            values.append(value)
+                        except Exception as e:
+                            logger.warning(f"Error processing sensor data: {e}")
+                            continue
+            
+            if data_points:
+                # Calculate statistics
+                min_val = min(values) if values else 0.0
+                max_val = max(values) if values else 0.0
+                avg_val = sum(values) / len(values) if values else 0.0
+                
+                # Calculate trend
+                trend = 'stable'
+                if len(values) >= 2:
+                    first_val = values[0]
+                    last_val = values[-1]
+                    if last_val > first_val * 1.05:
+                        trend = 'increasing'
+                    elif last_val < first_val * 0.95:
+                        trend = 'decreasing'
+                
+                sensors_data[sensor_type] = {
+                    'sensor_type': sensor_type,
+                    'data_points': data_points,
+                    'unit': unit,
+                    'min_value': min_val,
+                    'max_value': max_val,
+                    'average_value': avg_val,
+                    'trend': trend
+                }
+            else:
+                # Create default data
+                default_points = []
+                for i in range(24):
+                    timestamp = datetime.now() - timedelta(hours=i)
+                    default_points.append({
+                        'timestamp': timestamp.isoformat(),
+                        'value': 0.0,
+                        'status': 'green'
+                    })
+                
+                sensors_data[sensor_type] = {
+                    'sensor_type': sensor_type,
+                    'data_points': default_points,
+                    'unit': unit,
+                    'min_value': 0.0,
+                    'max_value': 0.0,
+                    'average_value': 0.0,
+                    'trend': 'stable'
+                }
+        
+        return {
+            'success': True,
+            'pond_id': pond_id,
+            'sensors': sensors_data,
+            'time_range': {
+                'start_time': (datetime.now() - timedelta(hours=24)).isoformat(),
+                'end_time': datetime.now().isoformat()
+            },
+            'total_points': sum(len(sensor['data_points']) for sensor in sensors_data.values())
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting simple sensor graph data: {str(e)}")
+        return {
+            'success': False,
+            'error': str(e),
+            'pond_id': pond_id,
+            'sensors': {},
+            'time_range': {
+                'start_time': (datetime.now() - timedelta(hours=24)).isoformat(),
+                'end_time': datetime.now().isoformat()
+            },
+            'total_points': 0
+        }
+
+
 
 
         

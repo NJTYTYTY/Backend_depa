@@ -13,7 +13,7 @@ import json
 # Use relative imports for Railway deployment
 from .core.config import settings
 from .storage import initialize_storage
-from .api.endpoints import auth, ponds, sensors, media, testing
+from .api.endpoints import auth, ponds, sensors, media, testing, logs
 from .core.websocket import manager, WebSocketMessage, MessageType
 
 # Configure logging
@@ -234,6 +234,7 @@ app.include_router(ponds.router, prefix="/api/v1")
 app.include_router(sensors.router, prefix="/api/v1")
 app.include_router(media.router, prefix="/api/v1")
 app.include_router(testing.router, prefix="/api/v1")
+app.include_router(logs.router, prefix="/api/v1")
 
 # Initialize JSON storage on startup
 @app.on_event("startup")

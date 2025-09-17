@@ -345,6 +345,39 @@ class SensorBatchStorage(JSONStorage):
             return latest_batch
         else:
             return None
+    
+    @staticmethod
+    def get_batches_by_pond_and_time_range(pond_id: int, start_time: datetime, end_time: datetime) -> List[Dict[str, Any]]:
+        """Get sensor batches for a pond within a specific time range"""
+        all_batches = SensorBatchStorage.get_all()
+        pond_batches = [batch for batch in all_batches if batch.get('pond_id') == pond_id]
+        
+        filtered_batches = []
+        for batch in pond_batches:
+            try:
+                # Parse timestamp from batch
+                batch_timestamp_str = batch.get('timestamp', '')
+                if batch_timestamp_str:
+                    # Handle different timestamp formats
+                    if 'T' in batch_timestamp_str:
+                        if batch_timestamp_str.endswith('Z'):
+                            batch_timestamp = datetime.fromisoformat(batch_timestamp_str.replace('Z', '+00:00'))
+                        else:
+                            batch_timestamp = datetime.fromisoformat(batch_timestamp_str)
+                    else:
+                        # Fallback for other formats
+                        batch_timestamp = datetime.fromisoformat(batch_timestamp_str)
+                    
+                    # Check if timestamp is within range
+                    if start_time <= batch_timestamp <= end_time:
+                        filtered_batches.append(batch)
+            except (ValueError, TypeError) as e:
+                logging.warning(f"Error parsing timestamp for batch {batch.get('id', 'unknown')}: {e}")
+                continue
+        
+        # Sort by timestamp (oldest first)
+        filtered_batches.sort(key=lambda x: x.get('timestamp', ''))
+        return filtered_batches
 
 class MediaAssetStorage(JSONStorage):
     """Media asset data storage operations"""
