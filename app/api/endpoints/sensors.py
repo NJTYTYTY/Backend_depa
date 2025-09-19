@@ -7,7 +7,7 @@ from typing import List, Optional
 from datetime import datetime, timedelta
 import logging
 
-from ...storage import SensorReadingStorage, SensorBatchStorage, PondStorage
+from ...storage import SensorReadingStorage, SensorBatchStorage, YorrKungStorage, PondStorage
 from ...storage.graph_storage import GraphDataStorage
 from ...schemas.sensor import (
     SensorDataCreate, 
@@ -92,45 +92,6 @@ def verify_sensor_data_access(
     from ...api.dependencies import verify_pond_ownership
     return verify_pond_ownership(pond_id, current_user)
 
-async def broadcast_sensor_update(
-    pond_id: int,
-    sensor_data: dict,
-    status: str,
-    user_id: Optional[int] = None
-):
-    """
-    Broadcast sensor update to WebSocket clients monitoring the pond
-    
-    Args:
-        pond_id: ID of the pond
-        sensor_data: Sensor data to broadcast
-        status: Calculated status (green/yellow/red)
-        user_id: ID of the user who submitted the data
-    """
-    try:
-        # Create WebSocket message
-        message = WebSocketMessage(
-            message_type=MessageType.SENSOR_UPDATE,
-            data={
-                "sensor_type": sensor_data["sensor_type"],
-                "value": sensor_data["value"],
-                "status": status,
-                "timestamp": datetime.utcnow().isoformat(),
-                "meta_data": sensor_data.get("meta_data"),
-                "user_id": user_id
-            },
-            pond_id=pond_id,
-            user_id=user_id
-        )
-        
-        # Broadcast to all clients monitoring this pond
-        await manager.broadcast_to_pond(pond_id, message)
-        
-        logger.info(f"Broadcasted sensor update: {sensor_data['sensor_type']}={sensor_data['value']} (status: {status}) to pond {pond_id}")
-        
-    except Exception as e:
-        logger.error(f"Failed to broadcast sensor update: {e}")
-
 # New endpoint for receiving bulk sensor data in batch format (RECOMMENDED)
 @router.post("/batch-sensor-data", response_model=dict, status_code=status.HTTP_201_CREATED)
 async def receive_batch_sensor_data(
@@ -141,14 +102,16 @@ async def receive_batch_sensor_data(
     {
       "pondId": "1",
       "timestamp": "2024-01-01T12:00:00.000Z",
-      "DO": 9.8,
-      "PH": 7.5,
-      "Temp": 25,
-      "Size": 9.9,
-      "Mineral": 50,
-      "SizePic": "https://exampleUrl.com",
-      "PicFood": "https://exampleUrl.com",
-      "PicColorWater": "https://exampleUrl.com"
+      "DO": 0,
+      "PH": 10,
+      "Temp": 0,
+      "ColorWater": "red",
+      "Mineral_1": 4800,
+      "Mineral_2": 4800,
+      "Mineral_3": 4800,
+      "Mineral_4": 4800,
+      "PicColorWater": "https://exampleUrl.com",
+      "PicKungOnWater": "https://exampleUrl.com"
     }
     
     This stores all sensor data as a single batch record for better performance.
@@ -186,10 +149,15 @@ async def receive_batch_sensor_data(
             'Temp': 'temperature',
             'Size': 'shrimpSize',
             'Mineral': 'minerals',
+            'Mineral_1': 'minerals_1',
+            'Mineral_2': 'minerals_2',
+            'Mineral_3': 'minerals_3',
+            'Mineral_4': 'minerals_4',
             'ColorWater': 'waterColor',  # ColorWater with status (green/yellow/red)
             'SizePic': 'sizePicture',
             'PicFood': 'foodPicture', 
-            'PicColorWater': 'waterColorPicture'  # PicColorWater with URL
+            'PicColorWater': 'waterColorPicture',  # PicColorWater with URL
+            'PicKungOnWater': 'kungOnWaterPicture'  # PicKungOnWater with URL
         }
         
         # Process sensor data - support both old and new formats
@@ -227,7 +195,7 @@ async def receive_batch_sensor_data(
                     sensor_type = sensor_mapping[key]
                     
                     # Handle different value types
-                    if key in ['SizePic', 'PicFood', 'PicColorWater']:
+                    if key in ['SizePic', 'PicFood', 'PicColorWater', 'PicKungOnWater']:
                         # These are URLs
                         sensors_data[sensor_type] = {
                             'value': str(value),
@@ -242,10 +210,12 @@ async def receive_batch_sensor_data(
                             'status': str(value)  # Use the value as status
                         }
                     else:
-                        # These are numeric values
+                        # These are numeric values (including Mineral_1-4)
                         try:
                             numeric_value = float(value)
-                            calculated_status = calculate_sensor_status(sensor_type, numeric_value)
+                            # For Mineral_1-4 fields, use 'minerals' sensor type for status calculation
+                            status_sensor_type = 'minerals' if sensor_type.startswith('minerals_') else sensor_type
+                            calculated_status = calculate_sensor_status(status_sensor_type, numeric_value)
                             sensors_data[sensor_type] = {
                                 'value': numeric_value,
                                 'type': 'numeric',
@@ -297,25 +267,24 @@ async def receive_batch_sensor_data(
             detail=f"Failed to process batch sensor data: {str(e)}"
         )
 
-# New endpoint for receiving bulk sensor data in JSON format (LEGACY)
-@router.post("/bulk-sensor-data", response_model=dict, status_code=status.HTTP_201_CREATED)
-async def receive_bulk_sensor_data(
+# New endpoint for receiving shrimp size data (YorrKung)
+@router.post("/batch-yorrkung-data", response_model=dict, status_code=status.HTTP_201_CREATED)
+async def receive_batch_yorrkung_data(
     request_data: dict,
 ):
     """
-    Receive bulk sensor data in JSON format (LEGACY - use /batch-sensor-data instead):
+    Receive batch shrimp size data in optimized format:
     {
       "pondId": "1",
       "timestamp": "2024-01-01T12:00:00.000Z",
-      "DO": 9.8,
-      "PH": 7.5,
-      "Temp": 25,
-      "Size": 9.9,
-      "Mineral": 50,
+      "Size_CM": 10,
+      "Size_gram": 100,
       "SizePic": "https://exampleUrl.com",
       "PicFood": "https://exampleUrl.com",
-      "PicColorWater": "https://exampleUrl.com"
+      "PicKungDin": "https://exampleUrl.com"
     }
+    
+    This stores all shrimp size data as a single batch record for better performance.
     """
     try:
         # Extract data from request
@@ -340,124 +309,101 @@ async def receive_bulk_sensor_data(
         else:
             timestamp = datetime.utcnow()
         
-        # Parse the sensor data from JSON object
-        # Map keys to sensor types
-        sensor_mapping = {
-            'DO': 'DO',
-            'PH': 'pH', 
-            'Temp': 'temperature',
-            'Size': 'shrimpSize',
-            'Mineral': 'minerals',
+        # Generate batch ID
+        batch_id = f"yorrkung_batch_{timestamp.strftime('%Y%m%d_%H%M%S_%f')}"
+        
+        # Map keys to sensor types for YorrKung data
+        yorrkung_sensor_mapping = {
+            'Size_CM': 'size_cm',
+            'Size_gram': 'size_gram',
             'SizePic': 'sizePicture',
-            'PicFood': 'foodPicture', 
-            'PicColorWater': 'waterColorPicture'
+            'PicFood': 'foodPicture',
+            'PicKungDin': 'kungDinPicture'
         }
         
-        parsed_data = {}
+        # Process sensor data
+        sensors_data = {}
         
-        # Process each sensor data field
         for key, value in request_data.items():
             if key in ['pondId', 'timestamp']:
                 continue  # Skip metadata fields
                 
-            if key in sensor_mapping:
-                sensor_type = sensor_mapping[key]
+            if key in yorrkung_sensor_mapping:
+                sensor_type = yorrkung_sensor_mapping[key]
                 
                 # Handle different value types
-                if key in ['SizePic', 'PicFood', 'PicColorWater']:
+                if key in ['SizePic', 'PicFood', 'PicKungDin']:
                     # These are URLs
-                    parsed_data[sensor_type] = {
+                    sensors_data[sensor_type] = {
                         'value': str(value),
-                        'type': 'url'
+                        'type': 'url',
+                        'status': 'info'
                     }
                 else:
-                    # These are numeric values
+                    # These are numeric values (Size_CM, Size_gram)
                     try:
                         numeric_value = float(value)
-                        parsed_data[sensor_type] = {
+                        # Calculate status based on reasonable thresholds for shrimp size
+                        calculated_status = 'green'  # Default to green for shrimp size data
+                        if sensor_type == 'size_cm':
+                            # Shrimp size in CM - reasonable range 1-15 cm
+                            if numeric_value < 1 or numeric_value > 15:
+                                calculated_status = 'yellow'
+                        elif sensor_type == 'size_gram':
+                            # Shrimp weight in grams - reasonable range 1-200 grams
+                            if numeric_value < 1 or numeric_value > 200:
+                                calculated_status = 'yellow'
+                        
+                        sensors_data[sensor_type] = {
                             'value': numeric_value,
-                            'type': 'numeric'
+                            'type': 'numeric',
+                            'status': calculated_status
                         }
                     except (ValueError, TypeError):
                         # If not numeric, store as string
-                        parsed_data[sensor_type] = {
+                        sensors_data[sensor_type] = {
                             'value': str(value),
-                            'type': 'string'
+                            'type': 'string',
+                            'status': 'info'
                         }
         
-        # Store sensor readings
-        storage = SensorReadingStorage()
-        stored_readings = []
+        # Create batch record
+        batch_data = {
+            "id": batch_id,
+            "pond_id": pond_id,
+            "timestamp": timestamp.isoformat(),
+            "sensors": sensors_data,
+            "created_at": datetime.utcnow().isoformat(),
+            "source": "yorrkung_batch_api"
+        }
         
-        for sensor_type, data in parsed_data.items():
-            if data['type'] == 'numeric':
-                # Calculate status for numeric sensors
-                calculated_status = calculate_sensor_status(sensor_type, data['value'])
-                
-                # Create sensor reading data
-                reading_data = {
-                    "id": f"sensor_{datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}_{sensor_type}",
-                    "pond_id": pond_id,
-                    "sensor_type": sensor_type,
-                    "value": data['value'],
-                    "status": calculated_status,
-                    "timestamp": timestamp.isoformat(),
-                    "meta_data": {
-                        "type": data['type'],
-                        "source": "bulk_template"
-                    }
-                }
-                
-                # Store the reading
-                stored_reading = storage.create(reading_data)
-                stored_readings.append(stored_reading)
-                
-                logger.info(f"Stored {sensor_type}={data['value']} for pond {pond_id} (status: {calculated_status})")
-            else:
-                # For non-numeric data, store as metadata
-                reading_data = {
-                    "id": f"sensor_{datetime.utcnow().strftime('%Y%m%d_%H%M%S_%f')}_{sensor_type}",
-                    "pond_id": pond_id,
-                    "sensor_type": sensor_type,
-                    "value": data['value'],
-                    "status": "info",
-                    "timestamp": timestamp.isoformat(),
-                    "meta_data": {
-                        "type": data['type'],
-                        "source": "bulk_template",
-                        "data": data['value']
-                    }
-                }
-                
-                # Store the reading
-                stored_reading = storage.create(reading_data)
-                stored_readings.append(stored_reading)
-                
-                logger.info(f"Stored {sensor_type}={data['value']} for pond {pond_id} (type: {data['type']})")
+        # Store in YorrKung batch storage
+        yorrkung_storage = YorrKungStorage()
+        stored_batch = yorrkung_storage.create(batch_data)
+        
+        logger.info(f"Stored YorrKung batch {batch_id} with {len(sensors_data)} sensors for pond {pond_id}")
         
         # Return success response
         return {
             "success": True,
-            "message": f"Bulk sensor data received successfully ({len(stored_readings)} readings)",
+            "message": f"YorrKung batch data received successfully ({len(sensors_data)} sensors)",
             "data": {
+                "batchId": batch_id,
                 "pondId": pond_id,
                 "timestamp": timestamp.isoformat(),
-                "readings": stored_readings,
-                "parsed_data": parsed_data
+                "sensors": sensors_data,
+                "stored_batch": stored_batch
             }
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error processing bulk sensor data: {e}")
+        logger.error(f"Error processing YorrKung batch data: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to process bulk sensor data: {str(e)}"
+            detail=f"Failed to process YorrKung batch data: {str(e)}"
         )
-
-# New endpoint for receiving sensor data from test_request_get
-# Single sensor endpoint removed - use batch-sensor-data instead
 
 # New endpoint for getting batch history
 @router.get("/batches/{pond_id}", response_model=dict)
@@ -497,6 +443,46 @@ async def get_sensor_batch_history(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get sensor batch history: {str(e)}"
+        )
+
+# New endpoint for getting YorrKung batch history
+@router.get("/yorrkung-batches/{pond_id}", response_model=dict)
+async def get_yorrkung_batch_history(
+    pond_id: int,
+    limit: int = Query(10, ge=1, le=100, description="Number of YorrKung batches to return")
+):
+    """
+    Get YorrKung batch history for a specific pond
+    """
+    try:
+        # Convert pond_id to int if it's a string
+        try:
+            pond_id = int(pond_id)
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="pondId must be a valid integer"
+            )
+        
+        # Get YorrKung batch history
+        yorrkung_storage = YorrKungStorage()
+        batches = yorrkung_storage.get_batch_history(pond_id, limit)
+        
+        return {
+            "success": True,
+            "data": {
+                "pondId": pond_id,
+                "batches": batches,
+                "count": len(batches)
+            },
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting YorrKung batch history: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get YorrKung batch history: {str(e)}"
         )
 
 # Single sensor endpoint removed - use batch-sensor-data instead
@@ -548,6 +534,89 @@ async def get_sensor_thresholds(
     ]
     
     return default_thresholds
+
+# Add endpoint for latest YorrKung data
+@router.get("/yorrkung-latest/{pond_id}", response_model=dict)
+async def get_latest_yorrkung_data(
+    pond_id: int,
+    current_user: dict = Depends(get_current_active_user),
+):
+    """
+    Get latest YorrKung data for a specific pond (authenticated)
+    """
+    try:
+        # Convert pond_id to int if it's a string
+        try:
+            pond_id = int(pond_id)
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="pondId must be a valid integer"
+            )
+        
+        # Verify pond access
+        verify_sensor_data_access(pond_id, current_user)
+        
+        # Use YorrKungStorage to get latest batch data
+        yorrkung_storage = YorrKungStorage()
+        
+        # Get the latest batch for this pond (without removing it)
+        latest_batch = yorrkung_storage.get_latest_batch(pond_id)
+        
+        if not latest_batch:
+            return {
+                "success": True,
+                "data": {
+                    "pondId": pond_id,
+                    "sensors": {},
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "message": "No YorrKung data found for this pond"
+                }
+            }
+        
+        # Debug logging
+        logger.info(f"Latest YorrKung batch (authenticated): {latest_batch}")
+        
+        # Extract sensors data from the latest batch
+        sensors_data = latest_batch.get("sensors", {})
+        
+        # Debug logging
+        logger.info(f"YorrKung sensors data (authenticated): {sensors_data}")
+        
+        # Convert batch format to latest format
+        latest_data = {}
+        for sensor_type, sensor_info in sensors_data.items():
+            if isinstance(sensor_info, dict):
+                latest_data[sensor_type] = {
+                    "value": sensor_info.get("value"),
+                    "timestamp": latest_batch.get("timestamp"),
+                    "status": sensor_info.get("status", "unknown")
+                }
+            else:
+                # Handle simple value format
+                latest_data[sensor_type] = {
+                    "value": sensor_info,
+                    "timestamp": latest_batch.get("timestamp"),
+                    "status": "unknown"
+                }
+        
+        return {
+            "success": True,
+            "data": {
+                "pondId": pond_id,
+                "sensors": latest_data,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting latest YorrKung data: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to get latest YorrKung data: {str(e)}"
+        )
 
 # Add endpoint for /sensors/latest/{pond_id} to match client expectations
 @router.get("/latest/{pond_id}", response_model=dict)
@@ -789,6 +858,87 @@ async def clear_sensor_batches_for_pond(
             detail="Failed to clear sensor batch data for pond"
         )
 
+# Admin endpoint to clear all YorrKung batch data
+@router.delete("/admin/clear-all-yorrkung-batches", response_model=dict)
+async def clear_all_yorrkung_batches(
+    current_user: dict = Depends(get_admin_user),
+):
+    """
+    Clear all YorrKung batch data (admin only)
+    """
+    try:
+        # Clear all YorrKung batch data
+        yorrkung_storage = YorrKungStorage()
+        success = yorrkung_storage.clear_all()
+        
+        if success:
+            logger.info(f"All YorrKung batch data cleared by admin user {current_user['id']}")
+            return {
+                "success": True,
+                "message": "All YorrKung batch data cleared successfully",
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to clear YorrKung batch data"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to clear YorrKung batch data: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to clear YorrKung batch data"
+        )
+
+# Admin endpoint to clear YorrKung batch data for a specific pond
+@router.delete("/admin/clear-yorrkung-batches/{pond_id}", response_model=dict)
+async def clear_yorrkung_batches_for_pond(
+    pond_id: int,
+    current_user: dict = Depends(get_admin_user),
+):
+    """
+    Clear YorrKung batch data for a specific pond (admin only)
+    """
+    try:
+        # Convert pond_id to int if it's a string
+        try:
+            pond_id = int(pond_id)
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="pondId must be a valid integer"
+            )
+        
+        # Clear YorrKung batch data for specific pond
+        yorrkung_storage = YorrKungStorage()
+        success = yorrkung_storage.clear_by_pond(pond_id)
+        
+        if success:
+            logger.info(f"YorrKung batch data for pond {pond_id} cleared by admin user {current_user['id']}")
+            return {
+                "success": True,
+                "message": f"YorrKung batch data for pond {pond_id} cleared successfully",
+                "pondId": pond_id,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to clear YorrKung batch data for pond"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to clear YorrKung batch data for pond {pond_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to clear YorrKung batch data for pond"
+        )
+
 # Endpoint to delete the latest batch for a specific pond
 @router.delete("/batches/{pond_id}/latest", response_model=dict)
 async def delete_latest_sensor_batch(
@@ -841,6 +991,57 @@ async def delete_latest_sensor_batch(
             detail="Failed to delete latest sensor batch"
         )
 
+# Endpoint to delete the latest YorrKung batch for a specific pond
+@router.delete("/yorrkung-batches/{pond_id}/latest", response_model=dict)
+async def delete_latest_yorrkung_batch(
+    pond_id: int,
+    current_user: dict = Depends(get_current_active_user),
+):
+    """
+    Delete the latest YorrKung batch for a specific pond
+    """
+    try:
+        # Convert pond_id to int if it's a string
+        try:
+            pond_id = int(pond_id)
+        except (ValueError, TypeError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="pondId must be a valid integer"
+            )
+        
+        # Verify pond access
+        verify_sensor_data_access(pond_id, current_user)
+        
+        # Delete latest YorrKung batch for this pond
+        yorrkung_storage = YorrKungStorage()
+        deleted_batch = yorrkung_storage.delete_latest_batch(pond_id)
+        
+        if deleted_batch:
+            logger.info(f"Latest YorrKung batch for pond {pond_id} deleted by user {current_user['id']}")
+            return {
+                "success": True,
+                "message": f"Latest YorrKung batch for pond {pond_id} deleted successfully",
+                "deletedBatch": deleted_batch,
+                "pondId": pond_id,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        else:
+            return {
+                "success": False,
+                "message": f"No YorrKung batch data found for pond {pond_id}",
+                "pondId": pond_id,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete latest YorrKung batch for pond {pond_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete latest YorrKung batch"
+        )
 
 # Simple graph endpoint for testing
 @router.get("/graph-simple/{pond_id}", response_model=dict)

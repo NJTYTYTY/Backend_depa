@@ -24,6 +24,7 @@ USERS_FILE = STORAGE_DIR / "users.json"
 PONDS_FILE = STORAGE_DIR / "ponds.json"
 SENSOR_READINGS_FILE = STORAGE_DIR / "sensor_readings.json"
 SENSOR_BATCHES_FILE = STORAGE_DIR / "sensor_batches.json"
+SENSOR_BATCH_YORRKUNG_FILE = STORAGE_DIR / "sensor_batch_YorrKung.json"
 MEDIA_ASSETS_FILE = STORAGE_DIR / "media_assets.json"
 
 class JSONStorage:
@@ -379,6 +380,113 @@ class SensorBatchStorage(JSONStorage):
         filtered_batches.sort(key=lambda x: x.get('timestamp', ''))
         return filtered_batches
 
+class YorrKungStorage(JSONStorage):
+    """YorrKung (shrimp size) data storage operations"""
+    
+    @staticmethod
+    def get_all() -> List[Dict[str, Any]]:
+        """Get all YorrKung batches"""
+        return JSONStorage._read_json(SENSOR_BATCH_YORRKUNG_FILE)
+    
+    @staticmethod
+    def get_by_pond(pond_id: int) -> List[Dict[str, Any]]:
+        """Get YorrKung batches by pond ID"""
+        batches = YorrKungStorage.get_all()
+        return [batch for batch in batches if batch.get('pond_id') == pond_id]
+    
+    @staticmethod
+    def get_by_id(batch_id: str) -> Optional[Dict[str, Any]]:
+        """Get YorrKung batch by ID"""
+        batches = YorrKungStorage.get_all()
+        return next((batch for batch in batches if batch.get('id') == batch_id), None)
+    
+    @staticmethod
+    def create(batch_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create new YorrKung batch"""
+        batches = YorrKungStorage.get_all()
+        batch_data['created_at'] = datetime.utcnow().isoformat()
+        
+        batches.append(batch_data)
+        JSONStorage._write_json(SENSOR_BATCH_YORRKUNG_FILE, batches)
+        return batch_data
+    
+    @staticmethod
+    def get_latest_batch(pond_id: int) -> Optional[Dict[str, Any]]:
+        """Get latest YorrKung batch for a pond WITHOUT removing it from storage"""
+        all_batches = YorrKungStorage.get_all()
+        pond_batches = [batch for batch in all_batches if batch.get('pond_id') == pond_id]
+        
+        if not pond_batches:
+            return None
+        
+        # Get the last batch for this pond
+        latest_batch = pond_batches[-1]
+        return latest_batch
+    
+    @staticmethod
+    def get_latest_sensors(pond_id: int) -> Dict[str, Any]:
+        """Get latest YorrKung sensor values for a pond (optimized for frontend)"""
+        latest_batch = YorrKungStorage.get_latest_batch(pond_id)
+        if not latest_batch:
+            return {}
+        
+        # Extract sensors data in frontend-friendly format
+        sensors = latest_batch.get('sensors', {})
+        result = {}
+        
+        for sensor_type, data in sensors.items():
+            result[sensor_type] = {
+                'value': data.get('value'),
+                'status': data.get('status'),
+                'type': data.get('type'),
+                'timestamp': latest_batch.get('timestamp')
+            }
+        
+        return result
+    
+    @staticmethod
+    def get_batch_history(pond_id: int, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get YorrKung batch history for a pond"""
+        batches = YorrKungStorage.get_by_pond(pond_id)
+        
+        # Return the last N batches (most recent first)
+        return batches[-limit:] if len(batches) >= limit else batches
+    
+    @staticmethod
+    def clear_all() -> bool:
+        """Clear all YorrKung batch data"""
+        return JSONStorage._write_json(SENSOR_BATCH_YORRKUNG_FILE, [])
+    
+    @staticmethod
+    def clear_by_pond(pond_id: int) -> bool:
+        """Clear YorrKung batch data for a specific pond"""
+        all_batches = YorrKungStorage.get_all()
+        filtered_batches = [batch for batch in all_batches if batch.get('pond_id') != pond_id]
+        return JSONStorage._write_json(SENSOR_BATCH_YORRKUNG_FILE, filtered_batches)
+    
+    @staticmethod
+    def delete_latest_batch(pond_id: int) -> Optional[Dict[str, Any]]:
+        """Delete the latest YorrKung batch for a specific pond and return the deleted batch"""
+        all_batches = YorrKungStorage.get_all()
+        pond_batches = [batch for batch in all_batches if batch.get('pond_id') == pond_id]
+        
+        if not pond_batches:
+            return None
+        
+        # Get the latest batch (last in the list)
+        latest_batch = pond_batches[-1]
+        
+        # Remove the latest batch from all batches
+        remaining_batches = [batch for batch in all_batches if batch.get('id') != latest_batch.get('id')]
+        
+        # Write back to file
+        success = JSONStorage._write_json(SENSOR_BATCH_YORRKUNG_FILE, remaining_batches)
+        
+        if success:
+            return latest_batch
+        else:
+            return None
+
 class MediaAssetStorage(JSONStorage):
     """Media asset data storage operations"""
     
@@ -392,6 +500,39 @@ class MediaAssetStorage(JSONStorage):
         """Get media assets by pond ID"""
         assets = MediaAssetStorage.get_all()
         return [asset for asset in assets if asset.get('pond_id') == pond_id]
+    
+    @staticmethod
+    def get_by_id(asset_id: int) -> Optional[Dict[str, Any]]:
+        """Get media asset by ID"""
+        assets = MediaAssetStorage.get_all()
+        for asset in assets:
+            if asset.get('id') == asset_id:
+                return asset
+        return None
+    
+    @staticmethod
+    def update(asset_id: int, asset_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Update media asset by ID"""
+        assets = MediaAssetStorage.get_all()
+        for i, asset in enumerate(assets):
+            if asset.get('id') == asset_id:
+                asset_data['id'] = asset_id
+                asset_data['last_modified'] = datetime.utcnow().isoformat()
+                assets[i] = asset_data
+                JSONStorage._write_json(MEDIA_ASSETS_FILE, assets)
+                return asset_data
+        return None
+    
+    @staticmethod
+    def delete(asset_id: int) -> bool:
+        """Delete media asset by ID"""
+        assets = MediaAssetStorage.get_all()
+        for i, asset in enumerate(assets):
+            if asset.get('id') == asset_id:
+                del assets[i]
+                JSONStorage._write_json(MEDIA_ASSETS_FILE, assets)
+                return True
+        return False
     
     @staticmethod
     def create(asset_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -426,7 +567,7 @@ def initialize_storage():
         logging.info("Created default admin user")
     
     # Ensure all storage directories exist
-    for file_path in [USERS_FILE, PONDS_FILE, SENSOR_READINGS_FILE, SENSOR_BATCHES_FILE, MEDIA_ASSETS_FILE]:
+    for file_path in [USERS_FILE, PONDS_FILE, SENSOR_READINGS_FILE, SENSOR_BATCHES_FILE, SENSOR_BATCH_YORRKUNG_FILE, MEDIA_ASSETS_FILE]:
         if not file_path.exists():
             JSONStorage._write_json(file_path, [])
             logging.info(f"Created {file_path}")

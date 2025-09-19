@@ -18,7 +18,7 @@ from ...schemas.media import (
     MediaAssetFilter, MediaAssetUpload, MediaAssetStats, MediaAssetBulk,
     MediaAssetBulkResponse, MediaAssetSearch, MediaAssetSearchResponse
 )
-from ...api.dependencies import get_current_user, verify_pond_ownership
+from ...api.dependencies import get_current_active_user, get_admin_user
 from ...core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -47,6 +47,26 @@ def get_mime_type(extension: str) -> str:
     """Get MIME type based on file extension"""
     mime_type, _ = mimetypes.guess_type(f"file{extension}")
     return mime_type or 'application/octet-stream'
+
+def verify_pond_ownership(pond_id: int, current_user: dict) -> dict:
+    """
+    Verify pond ownership and return pond object
+    """
+    pond = PondStorage.get_by_id(pond_id)
+    if not pond:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, 
+            detail="Pond not found"
+        )
+    
+    # Admin can access all ponds, owners can access their own ponds
+    if not current_user.get("is_admin", False) and pond.get("owner_id") != current_user.get("id"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, 
+            detail="Not authorized to access this pond"
+        )
+    
+    return pond
 
 def validate_file_upload(file: UploadFile) -> tuple[str, str, str]:
     """Validate uploaded file and return file type, extension, and mime type"""
@@ -109,12 +129,12 @@ async def upload_media_asset(
     tags: Optional[str] = Form(None),  # Comma-separated tags
     is_public: bool = Form(False),
     file: UploadFile = File(...),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_active_user),
 ):
     """Upload a new media asset"""
     
     # Verify pond ownership or admin access
-    await verify_pond_ownership(db, current_user, pond_id)
+    verify_pond_ownership(pond_id, current_user)
     
     # Validate file
     file_type, extension, mime_type = validate_file_upload(file)
@@ -139,28 +159,25 @@ async def upload_media_asset(
     file_path = save_uploaded_file(file, pond_id, safe_filename)
     
     # Create media asset record
-    media_asset_data = MediaAssetCreate(
-        title=title,
-        description=description,
-        file_type=file_type,
-        file_extension=extension,
-        file_size=file.size or 0,
-        mime_type=mime_type,
-        tags=tag_list,
-        is_public=is_public,
-        category=category,
-        pond_id=pond_id,
-        file_path=file_path,
-        original_filename=file.filename,
-        uploaded_by=current_user.id
-    )
+    media_asset_data = {
+        "title": title,
+        "description": description,
+        "file_type": file_type,
+        "file_extension": extension,
+        "file_size": file.size or 0,
+        "mime_type": mime_type,
+        "tags": tag_list,
+        "is_public": is_public,
+        "category": category,
+        "pond_id": pond_id,
+        "file_path": file_path,
+        "original_filename": file.filename,
+        "uploaded_by": current_user.get("id")
+    }
     
-    db_media_asset = MediaAsset(**media_asset_data.dict())
-    db.add(db_media_asset)
-    db.commit()
-    db.refresh(db_media_asset)
+    db_media_asset = MediaAssetStorage.create(media_asset_data)
     
-    logger.info(f"Uploaded media asset: {title} for pond {pond_id} by user {current_user.id}")
+    logger.info(f"Uploaded media asset: {title} for pond {pond_id} by user {current_user.get('id')}")
     
     return db_media_asset
 
@@ -174,53 +191,52 @@ async def list_media_assets(
     is_public: Optional[bool] = Query(None, description="Filter by public/private status"),
     category: Optional[str] = Query(None, description="Filter by category"),
     tags: Optional[str] = Query(None, description="Filter by tags (comma-separated)"),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_active_user),
 ):
     """List media assets with filtering and pagination"""
     
-    # Build query
-    query = db.query(MediaAsset)
+    # Get all assets
+    all_assets = MediaAssetStorage.get_all()
     
     # Apply filters
-    if pond_id:
-        # Check if user has access to this pond
-        await verify_pond_ownership(db, current_user, pond_id)
-        query = query.filter(MediaAsset.pond_id == pond_id)
+    filtered_assets = []
     
-    if file_type:
-        query = query.filter(MediaAsset.file_type == file_type)
-    
-    if uploaded_by:
-        query = query.filter(MediaAsset.uploaded_by == uploaded_by)
-    
-    if is_public is not None:
-        query = query.filter(MediaAsset.is_public == is_public)
-    
-    if category:
-        query = query.filter(MediaAsset.category == category)
-    
-    if tags:
-        tag_list = [tag.strip() for tag in tags.split(',') if tag.strip()]
-        if tag_list:
-            # Filter by any of the specified tags
-            tag_filters = [MediaAsset.tags.contains([tag]) for tag in tag_list]
-            query = query.filter(or_(*tag_filters))
-    
-    # Filter by visibility (user can see their own assets and public assets)
-    if not current_user.is_admin:
-        query = query.filter(
-            or_(
-                MediaAsset.uploaded_by == current_user.id,
-                MediaAsset.is_public == True
-            )
-        )
+    for asset in all_assets:
+        # Check pond access
+        if pond_id:
+            if asset.get('pond_id') != pond_id:
+                continue
+            # Verify pond ownership
+            verify_pond_ownership(pond_id, current_user)
+        
+        # Apply other filters
+        if file_type and asset.get('file_type') != file_type:
+            continue
+        if uploaded_by and asset.get('uploaded_by') != uploaded_by:
+            continue
+        if is_public is not None and asset.get('is_public') != is_public:
+            continue
+        if category and asset.get('category') != category:
+            continue
+        if tags:
+            tag_list = [tag.strip() for tag in tags.split(',') if tag.strip()]
+            asset_tags = asset.get('tags', [])
+            if not any(tag in asset_tags for tag in tag_list):
+                continue
+        
+        # Filter by visibility (user can see their own assets and public assets)
+        if not current_user.get("is_admin", False):
+            if asset.get('uploaded_by') != current_user.get('id') and not asset.get('is_public', False):
+                continue
+        
+        filtered_assets.append(asset)
     
     # Get total count
-    total = query.count()
+    total = len(filtered_assets)
     
     # Apply pagination
     offset = (page - 1) * size
-    assets = query.offset(offset).limit(size).all()
+    assets = filtered_assets[offset:offset + size]
     
     # Calculate total pages
     total_pages = (total + size - 1) // size
@@ -236,158 +252,148 @@ async def list_media_assets(
 @router.get("/assets/{asset_id}", response_model=MediaAssetResponse)
 async def get_media_asset(
     asset_id: int,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_active_user),
 ):
     """Get a specific media asset by ID"""
     
-    asset = db.query(MediaAsset).filter(MediaAsset.id == asset_id).first()
+    asset = MediaAssetStorage.get_by_id(asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Media asset not found")
     
     # Check access permissions
-    if not current_user.is_admin and asset.uploaded_by != current_user.id and not asset.is_public:
+    if not current_user.get("is_admin", False) and asset.get('uploaded_by') != current_user.get('id') and not asset.get('is_public', False):
         raise HTTPException(status_code=403, detail="Access denied to this media asset")
     
     # Increment view count
-    asset.view_count += 1
-    db.commit()
+    asset['view_count'] = asset.get('view_count', 0) + 1
+    MediaAssetStorage.update(asset_id, asset)
     
     return asset
 
 @router.get("/assets/{asset_id}/download")
 async def download_media_asset(
     asset_id: int,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_active_user),
 ):
     """Download a media asset file"""
     
-    asset = db.query(MediaAsset).filter(MediaAsset.id == asset_id).first()
+    asset = MediaAssetStorage.get_by_id(asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Media asset not found")
     
     # Check access permissions
-    if not current_user.is_admin and asset.uploaded_by != current_user.id and not asset.is_public:
+    if not current_user.get("is_admin", False) and asset.get('uploaded_by') != current_user.get('id') and not asset.get('is_public', False):
         raise HTTPException(status_code=403, detail="Access denied to this media asset")
     
     # Check if file exists
-    if not os.path.exists(asset.file_path):
+    if not os.path.exists(asset.get('file_path', '')):
         raise HTTPException(status_code=404, detail="File not found on disk")
     
     # Increment download count
-    asset.download_count += 1
-    db.commit()
+    asset['download_count'] = asset.get('download_count', 0) + 1
+    MediaAssetStorage.update(asset_id, asset)
     
     # Return file response
     return FileResponse(
-        path=asset.file_path,
-        filename=asset.original_filename,
-        media_type=asset.mime_type
+        path=asset.get('file_path', ''),
+        filename=asset.get('original_filename', ''),
+        media_type=asset.get('mime_type', 'application/octet-stream')
     )
 
 @router.put("/assets/{asset_id}", response_model=MediaAssetResponse)
 async def update_media_asset(
     asset_id: int,
     asset_update: MediaAssetUpdate,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_active_user),
 ):
     """Update a media asset"""
     
-    asset = db.query(MediaAsset).filter(MediaAsset.id == asset_id).first()
+    asset = MediaAssetStorage.get_by_id(asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Media asset not found")
     
     # Check ownership or admin access
-    if not current_user.is_admin and asset.uploaded_by != current_user.id:
+    if not current_user.get("is_admin", False) and asset.get('uploaded_by') != current_user.get('id'):
         raise HTTPException(status_code=403, detail="Only the owner or admin can update this asset")
     
     # Update fields
     update_data = asset_update.dict(exclude_unset=True)
     for field, value in update_data.items():
-        setattr(asset, field, value)
+        asset[field] = value
     
-    asset.last_modified = datetime.utcnow()
-    db.commit()
-    db.refresh(asset)
+    asset['last_modified'] = datetime.utcnow().isoformat()
+    updated_asset = MediaAssetStorage.update(asset_id, asset)
     
-    logger.info(f"Updated media asset {asset_id} by user {current_user.id}")
+    logger.info(f"Updated media asset {asset_id} by user {current_user.get('id')}")
     
-    return asset
+    return updated_asset
 
 @router.delete("/assets/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_media_asset(
     asset_id: int,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_active_user),
 ):
     """Delete a media asset"""
     
-    asset = db.query(MediaAsset).filter(MediaAsset.id == asset_id).first()
+    asset = MediaAssetStorage.get_by_id(asset_id)
     if not asset:
         raise HTTPException(status_code=404, detail="Media asset not found")
     
     # Check ownership or admin access
-    if not current_user.is_admin and asset.uploaded_by != current_user.id:
+    if not current_user.get("is_admin", False) and asset.get('uploaded_by') != current_user.get('id'):
         raise HTTPException(status_code=403, detail="Only the owner or admin can delete this asset")
     
     # Delete file from disk
-    delete_file_from_disk(asset.file_path)
+    delete_file_from_disk(asset.get('file_path', ''))
     
     # Delete database record
-    db.delete(asset)
-    db.commit()
+    MediaAssetStorage.delete(asset_id)
     
-    logger.info(f"Deleted media asset {asset_id} by user {current_user.id}")
+    logger.info(f"Deleted media asset {asset_id} by user {current_user.get('id')}")
 
 @router.get("/stats", response_model=MediaAssetStats)
 async def get_media_stats(
     pond_id: Optional[int] = Query(None, description="Filter by pond ID"),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_active_user),
 ):
     """Get media asset statistics"""
     
-    # Build base query
-    query = db.query(MediaAsset)
+    # Get all assets
+    all_assets = MediaAssetStorage.get_all()
     
     # Apply pond filter if specified
     if pond_id:
-        await verify_pond_ownership(db, current_user, pond_id)
-        query = query.filter(MediaAsset.pond_id == pond_id)
+        verify_pond_ownership(pond_id, current_user)
+        all_assets = [asset for asset in all_assets if asset.get('pond_id') == pond_id]
     
     # Filter by visibility
-    if not current_user.is_admin:
-        query = query.filter(
-            or_(
-                MediaAsset.uploaded_by == current_user.id,
-                MediaAsset.is_public == True
-            )
-        )
+    if not current_user.get("is_admin", False):
+        all_assets = [asset for asset in all_assets 
+                     if asset.get('uploaded_by') == current_user.get('id') or asset.get('is_public', False)]
     
     # Get basic stats
-    total_assets = query.count()
-    total_size = query.with_entities(func.sum(MediaAsset.file_size)).scalar() or 0
+    total_assets = len(all_assets)
+    total_size = sum(asset.get('file_size', 0) for asset in all_assets)
     
     # Get assets by type
     assets_by_type = {}
     for asset_type in ['image', 'video', 'document', 'audio']:
-        count = query.filter(MediaAsset.file_type == asset_type).count()
+        count = len([asset for asset in all_assets if asset.get('file_type') == asset_type])
         if count > 0:
             assets_by_type[asset_type] = count
     
     # Get assets by category
     assets_by_category = {}
-    category_counts = db.query(
-        MediaAsset.category,
-        func.count(MediaAsset.id)
-    ).filter(query.whereclause).group_by(MediaAsset.category).all()
-    
-    for category, count in category_counts:
+    for asset in all_assets:
+        category = asset.get('category')
         if category:
-            assets_by_category[category] = count
+            assets_by_category[category] = assets_by_category.get(category, 0) + 1
     
-    # Get recent uploads
-    recent_uploads = query.order_by(desc(MediaAsset.upload_date)).limit(10).all()
+    # Get recent uploads (sort by upload_date)
+    recent_uploads = sorted(all_assets, key=lambda x: x.get('upload_date', ''), reverse=True)[:10]
     
-    # Get popular assets
-    popular_assets = query.order_by(desc(MediaAsset.view_count)).limit(10).all()
+    # Get popular assets (sort by view_count)
+    popular_assets = sorted(all_assets, key=lambda x: x.get('view_count', 0), reverse=True)[:10]
     
     return MediaAssetStats(
         total_assets=total_assets,
@@ -401,15 +407,19 @@ async def get_media_stats(
 @router.post("/bulk", response_model=MediaAssetBulkResponse)
 async def bulk_media_operations(
     bulk_data: MediaAssetBulk,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_active_user),
 ):
     """Perform bulk operations on media assets"""
     
-    if not current_user.is_admin:
+    if not current_user.get("is_admin", False):
         raise HTTPException(status_code=403, detail="Only admins can perform bulk operations")
     
     # Get assets to operate on
-    assets = db.query(MediaAsset).filter(MediaAsset.id.in_(bulk_data.asset_ids)).all()
+    assets = []
+    for asset_id in bulk_data.asset_ids:
+        asset = MediaAssetStorage.get_by_id(asset_id)
+        if asset:
+            assets.append(asset)
     
     successful = 0
     failed = 0
@@ -418,43 +428,44 @@ async def bulk_media_operations(
     for asset in assets:
         try:
             if bulk_data.operation == 'delete':
-                delete_file_from_disk(asset.file_path)
-                db.delete(asset)
+                delete_file_from_disk(asset.get('file_path', ''))
+                MediaAssetStorage.delete(asset.get('id'))
                 successful += 1
                 
             elif bulk_data.operation == 'make_public':
-                asset.is_public = True
+                asset['is_public'] = True
+                MediaAssetStorage.update(asset.get('id'), asset)
                 successful += 1
                 
             elif bulk_data.operation == 'make_private':
-                asset.is_public = False
+                asset['is_public'] = False
+                MediaAssetStorage.update(asset.get('id'), asset)
                 successful += 1
                 
             elif bulk_data.operation == 'update_category' and bulk_data.category:
-                asset.category = bulk_data.category
+                asset['category'] = bulk_data.category
+                MediaAssetStorage.update(asset.get('id'), asset)
                 successful += 1
                 
             elif bulk_data.operation == 'add_tags' and bulk_data.tags:
-                existing_tags = asset.tags or []
+                existing_tags = asset.get('tags', [])
                 new_tags = [tag for tag in bulk_data.tags if tag not in existing_tags]
-                asset.tags = existing_tags + new_tags
+                asset['tags'] = existing_tags + new_tags
+                MediaAssetStorage.update(asset.get('id'), asset)
                 successful += 1
                 
             elif bulk_data.operation == 'remove_tags' and bulk_data.tags:
-                existing_tags = asset.tags or []
-                asset.tags = [tag for tag in existing_tags if tag not in bulk_data.tags]
+                existing_tags = asset.get('tags', [])
+                asset['tags'] = [tag for tag in existing_tags if tag not in bulk_data.tags]
+                MediaAssetStorage.update(asset.get('id'), asset)
                 successful += 1
                 
         except Exception as e:
             failed += 1
             errors.append({
-                "asset_id": asset.id,
+                "asset_id": asset.get('id'),
                 "error": str(e)
             })
-    
-    # Commit changes
-    if successful > 0:
-        db.commit()
     
     logger.info(f"Bulk operation {bulk_data.operation}: {successful} successful, {failed} failed")
     
@@ -472,52 +483,49 @@ async def search_media_assets(
     pond_id: Optional[int] = Query(None, description="Limit search to specific pond"),
     file_type: Optional[str] = Query(None, description="Limit search to specific file type"),
     include_private: bool = Query(False, description="Include private assets in search"),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_active_user),
 ):
     """Search media assets by title, description, and tags"""
     
     import time
     start_time = time.time()
     
-    # Build search query
-    search_query = db.query(MediaAsset)
+    # Get all assets
+    all_assets = MediaAssetStorage.get_all()
     
     # Apply pond filter if specified
     if pond_id:
-        await verify_pond_ownership(db, current_user, pond_id)
-        search_query = search_query.filter(MediaAsset.pond_id == pond_id)
+        verify_pond_ownership(pond_id, current_user)
+        all_assets = [asset for asset in all_assets if asset.get('pond_id') == pond_id]
     
     # Apply file type filter if specified
     if file_type:
-        search_query = search_query.filter(MediaAsset.file_type == file_type)
+        all_assets = [asset for asset in all_assets if asset.get('file_type') == file_type]
     
     # Apply visibility filter
-    if not include_private and not current_user.is_admin:
-        search_query = search_query.filter(
-            or_(
-                MediaAsset.uploaded_by == current_user.id,
-                MediaAsset.is_public == True
-            )
-        )
+    if not include_private and not current_user.get("is_admin", False):
+        all_assets = [asset for asset in all_assets 
+                     if asset.get('uploaded_by') == current_user.get('id') or asset.get('is_public', False)]
     
     # Build search conditions
-    search_conditions = []
     search_terms = query.lower().split()
+    results = []
     
-    for term in search_terms:
-        term_conditions = [
-            MediaAsset.title.ilike(f"%{term}%"),
-            MediaAsset.description.ilike(f"%{term}%"),
-            MediaAsset.tags.contains([term])
-        ]
-        search_conditions.append(or_(*term_conditions))
+    for asset in all_assets:
+        # Check if asset matches any search term
+        matches = False
+        for term in search_terms:
+            if (term in asset.get('title', '').lower() or 
+                term in asset.get('description', '').lower() or
+                any(term in tag.lower() for tag in asset.get('tags', []))):
+                matches = True
+                break
+        
+        if matches:
+            results.append(asset)
     
-    # Apply search conditions
-    if search_conditions:
-        search_query = search_query.filter(and_(*search_conditions))
-    
-    # Get results
-    results = search_query.order_by(desc(MediaAsset.upload_date)).limit(100).all()
+    # Sort by upload_date (most recent first)
+    results = sorted(results, key=lambda x: x.get('upload_date', ''), reverse=True)[:100]
     total_results = len(results)
     
     # Calculate search time

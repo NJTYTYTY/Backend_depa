@@ -7,6 +7,7 @@ from .json_storage import (
     PondStorage,
     SensorReadingStorage,
     SensorBatchStorage,
+    YorrKungStorage,
     MediaAssetStorage,
     initialize_storage
 )
@@ -16,6 +17,7 @@ __all__ = [
     'PondStorage', 
     'SensorReadingStorage',
     'SensorBatchStorage',
+    'YorrKungStorage',
     'MediaAssetStorage',
     'initialize_storage'
 ]
