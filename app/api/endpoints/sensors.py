@@ -243,6 +243,27 @@ async def receive_batch_sensor_data(
         batch_storage = SensorBatchStorage()
         stored_batch = batch_storage.create(batch_data)
         
+        # Also store in graph_data.json for graph visualization
+        # Only store DO, pH, and temperature sensors
+        graph_sensors = {}
+        for sensor_type in ['DO', 'pH', 'temperature']:
+            if sensor_type in sensors_data:
+                graph_sensors[sensor_type] = sensors_data[sensor_type]
+        
+        if graph_sensors:  # Only create graph entry if we have graph sensors
+            graph_data = {
+                "id": f"graph_{timestamp.strftime('%Y%m%d_%H%M%S_%f')}",
+                "pond_id": pond_id,
+                "timestamp": timestamp.isoformat(),
+                "sensors": graph_sensors
+            }
+            
+            # Store in graph data storage
+            graph_storage = GraphDataStorage()
+            graph_storage.create(graph_data)
+            
+            logger.info(f"Stored graph data for batch {batch_id} with {len(graph_sensors)} graph sensors for pond {pond_id}")
+        
         logger.info(f"Stored batch {batch_id} with {len(sensors_data)} sensors for pond {pond_id}")
         
         # Return success response
