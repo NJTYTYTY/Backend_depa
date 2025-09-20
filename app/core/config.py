@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     # Cache Configuration
     CACHE_TTL_SECONDS: int = 300  # 5 minutes
     
+    # Push Notification Configuration (loaded from JSON file)
+    VAPID_EMAIL: str = "admin@shrimpsense.com"
+    
     class Config:
         env_file = "config.env"
         case_sensitive = False

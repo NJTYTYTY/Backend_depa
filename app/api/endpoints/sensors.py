@@ -266,6 +266,28 @@ async def receive_batch_sensor_data(
         
         logger.info(f"Stored batch {batch_id} with {len(sensors_data)} sensors for pond {pond_id}")
         
+        # Send push notifications for sensor alerts
+        try:
+            from ...core.notification_triggers import notification_triggers
+            from ...storage.pond_storage import PondStorage
+            
+            # Get pond owner for notifications
+            pond_storage = PondStorage()
+            pond = pond_storage.get_by_id(pond_id)
+            
+            if pond and pond.get('owner_id'):
+                # Check for sensor alerts
+                await notification_triggers.check_sensor_alerts(
+                    pond_id=str(pond_id),
+                    sensor_data=sensors_data,
+                    user_id=pond['owner_id']
+                )
+                
+                logger.info(f"Checked sensor alerts for pond {pond_id}")
+        except Exception as e:
+            logger.error(f"Error checking sensor alerts: {e}")
+            # Don't fail the main request if notifications fail
+        
         # Return success response
         return {
             "success": True,
