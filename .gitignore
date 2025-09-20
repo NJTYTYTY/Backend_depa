@@ -163,6 +163,9 @@ config.env
 data/*.json
 !data/.gitkeep
 
+# VAPID keys (sensitive)
+vapid_keys.json
+
 # IDE
 .vscode/
 *.swp

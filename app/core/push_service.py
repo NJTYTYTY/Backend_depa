@@ -49,29 +49,38 @@ class PushService:
             self._generate_vapid_keys()
     
     def _generate_vapid_keys(self):
-        """Generate new VAPID keys"""
+        """Generate new VAPID keys using cryptography directly"""
         try:
-            from py_vapid import Vapid
-            
-            vapid = Vapid()
-            vapid.generate_keys()
-            
-            # Convert keys to string format for webpush
             from cryptography.hazmat.primitives import serialization
+            from cryptography.hazmat.primitives.asymmetric import ec
+            from cryptography.hazmat.backends import default_backend
             
-            # Get public key as URL-safe base64 string
-            public_key_bytes = vapid.public_key.public_bytes(
+            # Generate EC private key
+            private_key = ec.generate_private_key(
+                ec.SECP256R1(),
+                default_backend()
+            )
+            
+            # Get public key
+            public_key = private_key.public_key()
+            
+            # Convert public key to uncompressed point format
+            public_key_bytes = public_key.public_bytes(
                 encoding=serialization.Encoding.X962,
                 format=serialization.PublicFormat.UncompressedPoint
             )
+            
+            # Convert to URL-safe base64
             self.vapid_public_key = base64.urlsafe_b64encode(public_key_bytes).decode('utf-8').rstrip('=')
             
-            # Get private key as DER bytes then base64 encode
-            private_key_der = vapid.private_key.private_bytes(
+            # Convert private key to DER format
+            private_key_der = private_key.private_bytes(
                 encoding=serialization.Encoding.DER,
                 format=serialization.PrivateFormat.PKCS8,
                 encryption_algorithm=serialization.NoEncryption()
             )
+            
+            # Convert to URL-safe base64
             self.vapid_private_key = base64.urlsafe_b64encode(private_key_der).decode('utf-8').rstrip('=')
             self.vapid_email = "admin@shrimpsense.com"
             
