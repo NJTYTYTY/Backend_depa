@@ -257,17 +257,6 @@ class SensorBatchStorage(JSONStorage):
     
     @staticmethod
     def get_latest_batch(pond_id: int) -> Optional[Dict[str, Any]]:
-        """Get latest sensor batch for a pond (always get the last array element)"""
-        batches = SensorBatchStorage.get_by_pond(pond_id)
-        if not batches:
-            return None
-        
-        # Always get the last element in the array (most recent)
-        latest = batches[-1]
-        return latest
-    
-    @staticmethod
-    def get_latest_batch(pond_id: int) -> Optional[Dict[str, Any]]:
         """Get latest sensor batch for a pond WITHOUT removing it from storage"""
         all_batches = SensorBatchStorage.get_all()
         pond_batches = [batch for batch in all_batches if batch.get('pond_id') == pond_id]

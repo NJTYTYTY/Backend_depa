@@ -121,20 +121,62 @@ async def send_push_message(
         # For now, allow all authenticated users to send messages
         
         from ...schemas.push_notification import PushMessage
-        push_message = PushMessage(
-            title=message_request.title,
-            body=message_request.body,
-            icon=message_request.icon,
-            badge=message_request.badge,
-            image=message_request.image,
-            url=message_request.url,
-            tag=message_request.tag,
-            data=message_request.data,
-            require_interaction=message_request.require_interaction,
-            silent=message_request.silent,
-            vibrate=message_request.vibrate,
-            actions=message_request.actions
+        
+        # ตรวจสอบว่าเป็น shrimp alert หรือไม่
+        is_shrimp_alert = (
+            message_request.tag == "shrimp-alert" or 
+            "กุ้งลอย" in message_request.title or 
+            "shrimp" in message_request.title.lower()
         )
+        
+        # ถ้าเป็น shrimp alert ให้ใช้หัวข้อและข้อมูลเฉพาะ
+        if is_shrimp_alert:
+            push_message = PushMessage(
+                title="พบกุ้งลอยบนผิวน้ำ!!!",
+                body=message_request.body or "ตรวจพบกุ้งลอยบนผิวน้ำ ควรตรวจสอบทันที",
+                icon=message_request.icon or "/icons/icon-192x192.png",
+                badge=message_request.badge or "/icons/icon-72x72.png",
+                image=message_request.image,  # รูปภาพที่ส่งมา
+                url=message_request.url,  # URL ที่จะเปิดเมื่อคลิก
+                tag="shrimp-alert",
+                data={
+                    "alert_type": "shrimp_floating",
+                    "pond_id": message_request.data.get("pond_id") if message_request.data else None,
+                    "timestamp": message_request.data.get("timestamp") if message_request.data else None,
+                    **message_request.data  # รวมข้อมูลอื่นๆ ที่ส่งมา
+                },
+                require_interaction=True,  # บังคับให้ผู้ใช้โต้ตอบ
+                silent=False,
+                vibrate=[200, 100, 200, 100, 200],  # แบบการสั่น
+                actions=[
+                    {
+                        "action": "view",
+                        "title": "ดู",
+                        "icon": "/icons/icon-72x72.png"
+                    },
+                    {
+                        "action": "close",
+                        "title": "ปิด",
+                        "icon": "/icons/icon-72x72.png"
+                    }
+                ]
+            )
+        else:
+            # สำหรับ notification ปกติ
+            push_message = PushMessage(
+                title=message_request.title,
+                body=message_request.body,
+                icon=message_request.icon,
+                badge=message_request.badge,
+                image=message_request.image,
+                url=message_request.url,
+                tag=message_request.tag,
+                data=message_request.data,
+                require_interaction=message_request.require_interaction,
+                silent=message_request.silent,
+                vibrate=message_request.vibrate,
+                actions=message_request.actions
+            )
         
         # Send push message
         result = push_service.send_push_to_user(message_request.user_id, push_message)
