@@ -488,14 +488,13 @@ async def get_sensor_batch_history(
             detail=f"Failed to get sensor batch history: {str(e)}"
         )
 
-# New endpoint for getting YorrKung batch history
+# New endpoint for getting latest YorrKung batch data (single batch)
 @router.get("/yorrkung-batches/{pond_id}", response_model=dict)
-async def get_yorrkung_batch_history(
+async def get_latest_yorrkung_batch_data(
     pond_id: int,
-    limit: int = Query(10, ge=1, le=100, description="Number of YorrKung batches to return")
 ):
     """
-    Get YorrKung batch history for a specific pond
+    Get latest YorrKung batch data for a specific pond (single batch only)
     """
     try:
         # Convert pond_id to int if it's a string
@@ -507,25 +506,38 @@ async def get_yorrkung_batch_history(
                 detail="pondId must be a valid integer"
             )
         
-        # Get YorrKung batch history
+        # Get latest YorrKung batch data
         yorrkung_storage = YorrKungStorage()
-        batches = yorrkung_storage.get_batch_history(pond_id, limit)
+        latest_batch = yorrkung_storage.get_latest_batch(pond_id)
         
+        if not latest_batch:
+            return {
+                "success": True,
+                "data": {
+                    "pondId": pond_id,
+                    "batches": [],
+                    "count": 0,
+                    "message": "No YorrKung data found for this pond"
+                },
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        
+        # Return single batch in the same format as before
         return {
             "success": True,
             "data": {
                 "pondId": pond_id,
-                "batches": batches,
-                "count": len(batches)
+                "batches": [latest_batch],  # Wrap in array to maintain compatibility
+                "count": 1
             },
             "timestamp": datetime.utcnow().isoformat()
         }
         
     except Exception as e:
-        logger.error(f"Error getting YorrKung batch history: {e}")
+        logger.error(f"Error getting latest YorrKung batch data: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get YorrKung batch history: {str(e)}"
+            detail=f"Failed to get latest YorrKung batch data: {str(e)}"
         )
 
 # Single sensor endpoint removed - use batch-sensor-data instead
