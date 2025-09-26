@@ -269,7 +269,7 @@ async def receive_batch_sensor_data(
         # Send push notifications for sensor alerts
         try:
             from ...core.notification_triggers import notification_triggers
-            from ...storage.pond_storage import PondStorage
+            from ...storage import PondStorage
             
             # Get pond owner for notifications
             pond_storage = PondStorage()

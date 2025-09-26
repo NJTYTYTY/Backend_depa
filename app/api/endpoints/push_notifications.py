@@ -15,6 +15,7 @@ from ...schemas.push_notification import (
     PushMessageRequest,
     PushMessageResponse
 )
+from ...schemas.alert import AlertCreateRequest
 
 logger = logging.getLogger(__name__)
 
@@ -178,8 +179,42 @@ async def send_push_message(
                 actions=message_request.actions
             )
         
+        # ถ้ามี alert_type ในข้อมูล ให้สร้าง alert ใน storage ก่อน
+        alert_created = False
+        if message_request.data and message_request.data.get("alert_type"):
+            try:
+                alert_data = {
+                    "alert_type": message_request.data.get("alert_type"),
+                    "pond_id": int(message_request.data.get("pond_id", 0)),
+                    "user_id": message_request.user_id,
+                    "title": push_message.title,
+                    "body": push_message.body,
+                    "severity": "high" if "กุ้งลอย" in push_message.title or "shrimp" in push_message.title.lower() else "medium",
+                    "image_url": push_message.image,
+                    "target_url": push_message.url,
+                    "data": push_message.data
+                }
+                
+                # สร้าง alert ใน storage
+                from ...storage.alert_storage import AlertStorage
+                created_alert = AlertStorage.create_alert(alert_data)
+                
+                if created_alert:
+                    logger.info(f"Alert created in storage: {created_alert['id']}")
+                    alert_created = True
+                else:
+                    logger.warning("Failed to create alert in storage")
+                    
+            except Exception as e:
+                logger.error(f"Error creating alert in storage: {e}")
+        
         # Send push message
         result = push_service.send_push_to_user(message_request.user_id, push_message)
+        
+        # ถ้า push notification ล้มเหลวแต่ alert สร้างสำเร็จ ให้ปรับ result
+        if not result.success and alert_created:
+            logger.info("Push notification failed but alert created successfully")
+            result.message = f"Alert created in storage. {result.message}"
         
         logger.info(f"Push message sent to user {message_request.user_id} by user {user_id}")
         return result
@@ -215,6 +250,76 @@ async def cleanup_all_subscriptions_endpoint(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to cleanup all subscriptions"
+        )
+
+@router.post("/send-alert", response_model=PushMessageResponse)
+async def send_alert_notification(
+    alert_request: AlertCreateRequest,
+    user_id: int = Depends(get_current_user_id)
+):
+    """Send alert notification to specific user"""
+    try:
+        logger.info(f"Sending alert notification for user {user_id}")
+        
+        # Convert AlertCreateRequest to dict
+        alert_data = {
+            "alert_type": alert_request.alert_type,
+            "pond_id": alert_request.pond_id,
+            "user_id": alert_request.user_id,
+            "title": alert_request.title,
+            "body": alert_request.body,
+            "severity": alert_request.severity.value,
+            "image_url": alert_request.image_url,
+            "target_url": alert_request.target_url,
+            "data": alert_request.data
+        }
+        
+        # Send alert notification
+        result = push_service.send_alert_notification(alert_data)
+        
+        logger.info(f"Alert notification sent: {result.message}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error sending alert notification: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to send alert notification: {str(e)}"
+        )
+
+@router.post("/send-pond-alert", response_model=PushMessageResponse)
+async def send_pond_alert_notification(
+    alert_request: AlertCreateRequest,
+    user_id: int = Depends(get_current_user_id)
+):
+    """Send alert notification to all users monitoring a pond"""
+    try:
+        logger.info(f"Sending pond alert notification for pond {alert_request.pond_id}")
+        
+        # Convert AlertCreateRequest to dict
+        alert_data = {
+            "alert_type": alert_request.alert_type,
+            "pond_id": alert_request.pond_id,
+            "user_id": alert_request.user_id,
+            "title": alert_request.title,
+            "body": alert_request.body,
+            "severity": alert_request.severity.value,
+            "image_url": alert_request.image_url,
+            "target_url": alert_request.target_url,
+            "data": alert_request.data
+        }
+        
+        # Send alert to pond users
+        result = push_service.send_alert_to_pond_users(alert_data)
+        
+        logger.info(f"Pond alert notification sent: {result.message}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error sending pond alert notification: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to send pond alert notification: {str(e)}"
         )
 
 
