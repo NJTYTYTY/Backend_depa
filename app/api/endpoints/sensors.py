@@ -7,10 +7,12 @@ from typing import List, Optional
 from datetime import datetime, timedelta
 import logging
 import json
+from pydantic import BaseModel
 
 from ...storage import SensorReadingStorage, SensorBatchStorage, YorrKungStorage, PondStorage
 from ...storage.graph_storage import GraphDataStorage
 from ...storage.shrimp_size_storage import ShrimpSizeStorage
+from ...storage.routine_storage import RoutineStorage
 from ...schemas.sensor import (
     SensorDataCreate, 
     SensorDataUpdate, 
@@ -1722,5 +1724,111 @@ async def add_future_test_data():
         raise HTTPException(status_code=500, detail=f"Error adding future test data: {str(e)}")
 
 
+# Routine Settings Endpoints
+@router.get("/routine-settings/{pond_id}", response_model=dict)
+async def get_routine_settings(pond_id: int):
+    """Get routine settings for a specific pond"""
+    try:
+        routine_storage = RoutineStorage()
+        routines = routine_storage.get_pond_routines(pond_id)
         
+        return {
+            "success": True,
+            "pond_id": pond_id,
+            "routines": routines
+        }
+    except Exception as e:
+        logger.error(f"Error getting routine settings: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting routine settings: {str(e)}")
+
+@router.post("/routine-settings/{pond_id}", response_model=dict)
+async def save_routine_settings(pond_id: int, routines: dict):
+    """Save routine settings for a specific pond"""
+    try:
+        routine_storage = RoutineStorage()
+        routine_storage.save_pond_routines(pond_id, routines)
         
+        return {
+            "success": True,
+            "pond_id": pond_id,
+            "message": "Routine settings saved successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error saving routine settings: {e}")
+        raise HTTPException(status_code=500, detail=f"Error saving routine settings: {str(e)}")
+
+@router.post("/routine-settings/{pond_id}/schedule", response_model=dict)
+async def add_routine_schedule(pond_id: int, schedule: dict):
+    """Add a new routine schedule"""
+    try:
+        routine_storage = RoutineStorage()
+        schedule_id = routine_storage.add_schedule(pond_id, schedule)
+        
+        return {
+            "success": True,
+            "pond_id": pond_id,
+            "schedule_id": schedule_id,
+            "message": "Schedule added successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error adding routine schedule: {e}")
+        raise HTTPException(status_code=500, detail=f"Error adding routine schedule: {str(e)}")
+
+@router.delete("/routine-settings/{pond_id}/schedule/{schedule_id}", response_model=dict)
+async def remove_routine_schedule(pond_id: int, schedule_id: str):
+    """Remove a routine schedule"""
+    try:
+        routine_storage = RoutineStorage()
+        success = routine_storage.remove_schedule(pond_id, schedule_id)
+        
+        if success:
+            return {
+                "success": True,
+                "pond_id": pond_id,
+                "schedule_id": schedule_id,
+                "message": "Schedule removed successfully"
+            }
+        else:
+            raise HTTPException(status_code=404, detail="Schedule not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error removing routine schedule: {e}")
+        raise HTTPException(status_code=500, detail=f"Error removing routine schedule: {str(e)}")
+
+class ToggleRequest(BaseModel):
+    enabled: bool
+
+@router.post("/routine-settings/{pond_id}/toggle", response_model=dict)
+async def toggle_routine_enabled(pond_id: int, request_data: ToggleRequest):
+    """Toggle routine enabled status"""
+    try:
+        enabled = request_data.enabled
+        routine_storage = RoutineStorage()
+        routine_storage.toggle_routine_enabled(pond_id, enabled)
+        
+        return {
+            "success": True,
+            "pond_id": pond_id,
+            "enabled": enabled,
+            "message": f"Routine {'enabled' if enabled else 'disabled'} successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error toggling routine enabled: {e}")
+        raise HTTPException(status_code=500, detail=f"Error toggling routine enabled: {str(e)}")
+
+@router.get("/routine-settings/all/enabled", response_model=dict)
+async def get_all_enabled_schedules():
+    """Get all enabled schedules from all ponds"""
+    try:
+        routine_storage = RoutineStorage()
+        schedules = routine_storage.get_all_enabled_schedules()
+        
+        return {
+            "success": True,
+            "schedules": schedules,
+            "count": len(schedules)
+        }
+    except Exception as e:
+        logger.error(f"Error getting all enabled schedules: {e}")
+        raise HTTPException(status_code=500, detail=f"Error getting all enabled schedules: {str(e)}")
