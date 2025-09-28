@@ -6,9 +6,11 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from typing import List, Optional
 from datetime import datetime, timedelta
 import logging
+import json
 
 from ...storage import SensorReadingStorage, SensorBatchStorage, YorrKungStorage, PondStorage
 from ...storage.graph_storage import GraphDataStorage
+from ...storage.shrimp_size_storage import ShrimpSizeStorage
 from ...schemas.sensor import (
     SensorDataCreate, 
     SensorDataUpdate, 
@@ -151,7 +153,7 @@ async def receive_batch_sensor_data(
             'DO': 'DO',
             'PH': 'pH', 
             'Temp': 'temperature',
-            'Size': 'shrimpSize',
+            # 'Size': 'shrimpSize',  # Removed - ShrimpSize now handled separately
             'Mineral': 'minerals',
             'Mineral_1': 'minerals_1',
             'Mineral_2': 'minerals_2',
@@ -310,6 +312,23 @@ async def receive_batch_sensor_data(
             graph_storage.create(graph_data)
             
             logger.info(f"Stored graph data for batch {batch_id} with {len(graph_sensors)} graph sensors for pond {pond_id}")
+        
+        # Store ShrimpSize data separately for graph visualization
+        if 'shrimpSize' in sensors_data:
+            shrimp_size_value = sensors_data['shrimpSize'].get('value', 0.0)
+            if isinstance(shrimp_size_value, (int, float)) and shrimp_size_value > 0:
+                shrimp_size_data = {
+                    "id": f"shrimp_size_{timestamp.strftime('%Y%m%d_%H%M%S_%f')}",
+                    "pond_id": pond_id,
+                    "timestamp": timestamp.isoformat(),
+                    "shrimp_size": float(shrimp_size_value)
+                }
+                
+                # Store in shrimp size storage
+                shrimp_size_storage = ShrimpSizeStorage()
+                shrimp_size_storage.create(shrimp_size_data)
+                
+                logger.info(f"Stored shrimp size data for batch {batch_id}: {shrimp_size_value}cm for pond {pond_id}")
         
         logger.info(f"Stored batch {batch_id} with {len(sensors_data)} sensors for pond {pond_id}")
         
@@ -1147,9 +1166,15 @@ async def delete_latest_yorrkung_batch(
 
 # Simple graph endpoint for testing
 @router.get("/graph-simple/{pond_id}", response_model=dict)
-async def get_sensor_graph_data_simple(pond_id: int, hours: int = 24):
+async def get_sensor_graph_data_simple(
+    pond_id: int, 
+    hours: int = Query(24, ge=1, le=720, description="Number of hours to fetch data for"),
+    timeframe: str = Query("1D", description="Timeframe: 1D, 7D, or 30D"),
+    sensor_types: str = Query(None, description="Comma-separated list of sensor types to include (e.g., 'DO,pH,temperature')")
+):
     """
     Get sensor data formatted for graph visualization (simple version)
+    Supports timeframe parameter for better UX
     """
     try:
         # Get graph data using GraphDataStorage
@@ -1162,27 +1187,108 @@ async def get_sensor_graph_data_simple(pond_id: int, hours: int = 24):
             logging.info(f"API: First batch keys: {list(batches[0].keys())}")
             logging.info(f"API: First batch sensors: {list(batches[0].get('sensors', {}).keys())}")
             # Debug: Check actual sensor values
-            for sensor_type in ['DO', 'pH', 'temperature', 'shrimpSize', 'minerals']:
+            for sensor_type in ['DO', 'pH', 'temperature', 'minerals']:
                 if sensor_type in batches[0].get('sensors', {}):
                     sensor_data = batches[0]['sensors'][sensor_type]
                     logging.info(f"API: {sensor_type} data: {sensor_data}")
                 else:
                     logging.info(f"API: {sensor_type} not found in sensors")
         
-        # Take only the last N batches based on hours parameter
-        batches = batches[-hours:] if len(batches) > hours else batches
+        # Filter data by timeframe based on hours parameter
+        if batches:
+            # Sort by timestamp to ensure correct filtering
+            batches.sort(key=lambda x: datetime.fromisoformat(x['timestamp'].replace('Z', '+00:00')))
+            
+            # Filter by time range based on timeframe
+            end_time = datetime.now().replace(tzinfo=None)  # Make timezone-naive
+            
+            # Adjust time range based on timeframe
+            if timeframe == "1D":
+                # For 1D, show only today (00:00 to 23:59:59)
+                start_time = end_time.replace(hour=0, minute=0, second=0, microsecond=0)
+                end_time = end_time.replace(hour=23, minute=59, second=59, microsecond=999999)
+            elif timeframe == "7D":
+                # For 7D, show last 7 days with 4-hour intervals
+                start_time = end_time - timedelta(days=7)
+            elif timeframe == "30D":
+                # For 30D, show last 30 days with 8-hour intervals
+                start_time = end_time - timedelta(days=30)
+            else:
+                # Default to hours-based filtering
+                start_time = end_time - timedelta(hours=hours)
+            
+            filtered_batches = []
+            for batch in batches:
+                try:
+                    batch_time = datetime.fromisoformat(batch['timestamp'].replace('Z', '+00:00'))
+                    # Convert to timezone-naive for comparison
+                    batch_time_naive = batch_time.replace(tzinfo=None)
+                    
+                    # For 1D timeframe, ensure we only get today's data
+                    if timeframe == "1D":
+                        batch_date = batch_time_naive.date()
+                        today_date = end_time.date()
+                        if batch_date == today_date and start_time <= batch_time_naive <= end_time:
+                            filtered_batches.append(batch)
+                    else:
+                        if start_time <= batch_time_naive <= end_time:
+                            filtered_batches.append(batch)
+                except Exception as e:
+                    logging.warning(f"Error parsing timestamp {batch.get('timestamp')}: {e}")
+                    continue
+            
+            # Further filter for 7D and 30D to reduce data points
+            if timeframe == "7D":
+                # Keep only every 4th hour for 7D, but ensure we include the latest data
+                if len(filtered_batches) > 0:
+                    # Always include the last batch (most recent data)
+                    last_batch = filtered_batches[-1]
+                    # Filter every 4th batch, but keep the last one
+                    filtered_batches = [batch for i, batch in enumerate(filtered_batches[:-1]) if i % 4 == 0] + [last_batch]
+            elif timeframe == "30D":
+                # Keep only every 8th hour for 30D, but ensure we include the latest data
+                if len(filtered_batches) > 0:
+                    # Always include the last batch (most recent data)
+                    last_batch = filtered_batches[-1]
+                    # Filter every 8th batch, but keep the last one
+                    filtered_batches = [batch for i, batch in enumerate(filtered_batches[:-1]) if i % 8 == 0] + [last_batch]
+            
+            batches = filtered_batches
+            logging.info(f"API: Filtered to {len(batches)} batches for timeframe {timeframe}")
         
         # Process data for each sensor type
         sensors_data = {}
-        numeric_sensors = ['DO', 'pH', 'temperature', 'shrimpSize', 'minerals']
+        numeric_sensors = ['DO', 'pH', 'temperature', 'minerals']  # Removed 'shrimpSize'
         
-        for sensor_type in numeric_sensors:
+        # Parse requested sensor types
+        requested_sensors = []
+        if sensor_types:
+            requested_sensors = [s.strip() for s in sensor_types.split(',') if s.strip()]
+            # Filter to only include valid sensor types
+            requested_sensors = [s for s in requested_sensors if s in numeric_sensors]
+            logging.info(f"Parsed sensor_types parameter: '{sensor_types}' -> {requested_sensors}")
+        else:
+            # If no sensor_types specified, return all
+            requested_sensors = numeric_sensors
+            logging.info(f"No sensor_types specified, returning all: {requested_sensors}")
+        
+        logging.info(f"Final requested sensor types: {requested_sensors}")
+        
+        # Filter out any unwanted sensor types from batches
+        for batch in batches:
+            if 'sensors' in batch:
+                # Remove shrimpsize and other unwanted sensor types
+                unwanted_sensors = ['shrimpsize', 'shrimpSize', 'size', 'Size']
+                for unwanted in unwanted_sensors:
+                    if unwanted in batch['sensors']:
+                        del batch['sensors'][unwanted]
+                        logging.info(f"Removed unwanted sensor type: {unwanted}")
+        
+        for sensor_type in requested_sensors:
             # Determine unit first (outside of if-else)
             unit = None
             if sensor_type == 'temperature':
                 unit = '°C'
-            elif sensor_type == 'shrimpSize':
-                unit = 'cm'
             elif sensor_type == 'minerals':
                 unit = 'kg'
             elif sensor_type == 'DO':
@@ -1222,16 +1328,45 @@ async def get_sensor_graph_data_simple(pond_id: int, hours: int = 24):
                             continue
             
             if data_points:
-                # Calculate statistics
-                min_val = min(values) if values else 0.0
-                max_val = max(values) if values else 0.0
-                avg_val = sum(values) / len(values) if values else 0.0
+                # For 1D timeframe, fill missing hours with 0.0 data
+                if timeframe == "1D":
+                    today = datetime.now().date()
+                    existing_hours = set()
+                    
+                    # Get existing hours from real data
+                    for point in data_points:
+                        point_date = datetime.fromisoformat(point['timestamp'].replace('Z', '+00:00')).date()
+                        if point_date == today:
+                            hour = datetime.fromisoformat(point['timestamp'].replace('Z', '+00:00')).hour
+                            existing_hours.add(hour)
+                    
+                    # Fill missing hours with 0.0 data
+                    for hour in range(24):
+                        if hour not in existing_hours:
+                            timestamp = datetime.combine(today, datetime.min.time().replace(hour=hour))
+                            data_points.append({
+                                'timestamp': timestamp.isoformat(),
+                                'value': 0.0,
+                                'status': 'gray'
+                            })
+                    
+                    # Sort data points by timestamp
+                    data_points.sort(key=lambda x: datetime.fromisoformat(x['timestamp'].replace('Z', '+00:00')))
                 
-                # Calculate trend
+                # Debug logging
+                logging.info(f"API: Created {len(data_points)} data points for {sensor_type}")
+                
+                # Calculate statistics (exclude 0.0 default values)
+                real_values = [v for v in values if v > 0.0]
+                min_val = round(min(real_values), 2) if real_values else 0.0
+                max_val = round(max(real_values), 2) if real_values else 0.0
+                avg_val = round(sum(real_values) / len(real_values), 2) if real_values else 0.0
+                
+                # Calculate trend (use only real values)
                 trend = 'stable'
-                if len(values) >= 2:
-                    first_val = values[0]
-                    last_val = values[-1]
+                if len(real_values) >= 2:
+                    first_val = real_values[0]
+                    last_val = real_values[-1]
                     if last_val > first_val * 1.05:
                         trend = 'increasing'
                     elif last_val < first_val * 0.95:
@@ -1247,15 +1382,43 @@ async def get_sensor_graph_data_simple(pond_id: int, hours: int = 24):
                     'trend': trend
                 }
             else:
-                # Create default data
-                default_points = []
-                for i in range(24):
-                    timestamp = datetime.now() - timedelta(hours=i)
-                    default_points.append({
-                        'timestamp': timestamp.isoformat(),
-                        'value': 0.0,
-                        'status': 'green'
-                    })
+                # Create default data only for requested sensor types
+                if sensor_type in requested_sensors:
+                    default_points = []
+                    
+                    # Create default 0.0 data points for 1D timeframe to show baseline
+                    if timeframe == "1D":
+                        # Create hourly data points for today (00:00 to 23:00)
+                        today = datetime.now().date()
+                        for hour in range(24):
+                            timestamp = datetime.combine(today, datetime.min.time().replace(hour=hour))
+                            default_points.append({
+                                'timestamp': timestamp.isoformat(),
+                                'value': 0.0,
+                                'status': 'gray'  # Gray status for default/waiting data
+                            })
+                    else:
+                        # For 7D and 30D, create fewer default points
+                        if timeframe == "7D":
+                            # Create daily points for last 7 days
+                            for day_offset in range(7):
+                                date = datetime.now().date() - timedelta(days=day_offset)
+                                timestamp = datetime.combine(date, datetime.min.time().replace(hour=12))
+                                default_points.append({
+                                    'timestamp': timestamp.isoformat(),
+                                    'value': 0.0,
+                                    'status': 'gray'
+                                })
+                        elif timeframe == "30D":
+                            # Create every 3rd day for last 30 days
+                            for day_offset in range(0, 30, 3):
+                                date = datetime.now().date() - timedelta(days=day_offset)
+                                timestamp = datetime.combine(date, datetime.min.time().replace(hour=12))
+                                default_points.append({
+                                    'timestamp': timestamp.isoformat(),
+                                    'value': 0.0,
+                                    'status': 'gray'
+                                })
                 
                 sensors_data[sensor_type] = {
                     'sensor_type': sensor_type,
@@ -1267,15 +1430,27 @@ async def get_sensor_graph_data_simple(pond_id: int, hours: int = 24):
                     'trend': 'stable'
                 }
         
+        # Final filter to ensure only requested sensor types in response
+        filtered_sensors_data = {}
+        for sensor_type, sensor_data in sensors_data.items():
+            if sensor_type in requested_sensors:
+                filtered_sensors_data[sensor_type] = sensor_data
+        
+        # Calculate actual time range based on filtered data
+        actual_start_time = start_time if 'start_time' in locals() else (datetime.now() - timedelta(hours=hours))
+        actual_end_time = end_time if 'end_time' in locals() else datetime.now()
+        
         return {
             'success': True,
             'pond_id': pond_id,
-            'sensors': sensors_data,
+            'sensors': filtered_sensors_data,
             'time_range': {
-                'start_time': (datetime.now() - timedelta(hours=24)).isoformat(),
-                'end_time': datetime.now().isoformat()
+                'start_time': actual_start_time.isoformat(),
+                'end_time': actual_end_time.isoformat()
             },
-            'total_points': sum(len(sensor['data_points']) for sensor in sensors_data.values())
+            'total_points': sum(len(sensor['data_points']) for sensor in filtered_sensors_data.values()),
+            'timeframe': timeframe,
+            'hours': hours
         }
         
     except Exception as e:
@@ -1292,7 +1467,260 @@ async def get_sensor_graph_data_simple(pond_id: int, hours: int = 24):
             'total_points': 0
         }
 
+# ShrimpSize Graph endpoint
+@router.get("/graph-shrimpsize/{pond_id}", response_model=dict)
+async def get_shrimp_size_graph_data(
+    pond_id: int,
+    hours: int = Query(24, ge=1, le=720, description="Number of hours to fetch data for"),
+    timeframe: str = Query("1D", description="Timeframe: 1D, 7D, or 30D")
+):
+    """
+    Get shrimp size data formatted for graph visualization
+    """
+    try:
+        # Get shrimp size data using ShrimpSizeStorage
+        shrimp_size_storage = ShrimpSizeStorage()
+        batches = shrimp_size_storage.get_by_timeframe(pond_id, hours)
+        
+        # Debug logging
+        logger.info(f"API: Found {len(batches)} shrimp size batches for pond {pond_id}")
+        
+        # Process data for shrimp size graph
+        data_points = []
+        values = []
+        
+        for batch in batches:
+            try:
+                # Parse timestamp
+                timestamp_str = batch.get('timestamp', '')
+                if timestamp_str:
+                    if timestamp_str.endswith('Z'):
+                        timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                    else:
+                        timestamp = datetime.fromisoformat(timestamp_str)
+                else:
+                    timestamp = datetime.now()
+                
+                # Get shrimp size value
+                shrimp_size = batch.get('shrimp_size', 0.0)
+                if isinstance(shrimp_size, (int, float)):
+                    value = float(shrimp_size)
+                else:
+                    value = 0.0
+                
+                # Determine status based on size
+                if value > 6:
+                    status = 'green'
+                elif value > 4:
+                    status = 'yellow'
+                else:
+                    status = 'red'
+                
+                data_points.append({
+                    'timestamp': timestamp.isoformat(),
+                    'value': value,
+                    'status': status
+                })
+                values.append(value)
+                
+            except Exception as e:
+                logger.warning(f"Error processing shrimp size data: {e}")
+                continue
+        
+        # If no data, create default data
+        if not data_points:
+            for i in range(min(hours, 24)):
+                timestamp = datetime.now() - timedelta(hours=i)
+                data_points.append({
+                    'timestamp': timestamp.isoformat(),
+                    'value': 2.0,  # Default shrimp size
+                    'status': 'yellow'
+                })
+                values.append(2.0)
+        
+        # Calculate statistics
+        min_val = min(values) if values else 0.0
+        max_val = max(values) if values else 0.0
+        avg_val = sum(values) / len(values) if values else 0.0
+        
+        # Calculate trend
+        trend = 'stable'
+        if len(values) >= 2:
+            first_val = values[0]
+            last_val = values[-1]
+            if last_val > first_val * 1.05:
+                trend = 'increasing'
+            elif last_val < first_val * 0.95:
+                trend = 'decreasing'
+        
+        # Create response
+        shrimp_size_data = {
+            'sensor_type': 'Shrimp Size (CM)',
+            'data_points': data_points,
+            'unit': 'cm',
+            'min_value': min_val,
+            'max_value': max_val,
+            'average_value': avg_val,
+            'trend': trend
+        }
+        
+        return {
+            'success': True,
+            'pond_id': pond_id,
+            'sensor_data': shrimp_size_data,
+            'time_range': {
+                'start_time': (datetime.now() - timedelta(hours=hours)).isoformat(),
+                'end_time': datetime.now().isoformat()
+            },
+            'total_points': len(data_points),
+            'timeframe': timeframe,
+            'hours': hours
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting shrimp size graph data: {str(e)}")
+        return {
+            'success': False,
+            'error': str(e),
+            'pond_id': pond_id,
+            'sensor_data': {
+                'sensor_type': 'Shrimp Size (CM)',
+                'data_points': [],
+                'unit': 'cm',
+                'min_value': 0.0,
+                'max_value': 0.0,
+                'average_value': 0.0,
+                'trend': 'stable'
+            },
+            'time_range': {
+                'start_time': (datetime.now() - timedelta(hours=hours)).isoformat(),
+                'end_time': datetime.now().isoformat()
+            },
+            'total_points': 0
+        }
 
 
+@router.post("/add-test-data")
+async def add_test_data():
+    """Add test data to graph_data.json for testing real-time updates"""
+    try:
+        # Read existing data
+        with open("data/graph_data.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+        
+        # Add new test data for September 29
+        new_data = {
+            "id": "graph_demo_1D2_001",
+            "pond_id": 1,
+            "timestamp": "2025-09-29T00:00:00+00:00",
+            "sensors": {
+                "DO": {
+                    "value": 12.555555,
+                    "type": "numeric",
+                    "status": "green"
+                },
+                "pH": {
+                    "value": 12.0,
+                    "type": "numeric",
+                    "status": "green"
+                },
+                "temperature": {
+                    "value": 15.0,
+                    "type": "numeric",
+                    "status": "yellow"
+                }
+            }
+        }
+        
+        # Add more test data for different hours
+        for hour in range(1, 24):
+            hour_data = {
+                "id": f"graph_demo_1D2_{hour:03d}",
+                "pond_id": 1,
+                "timestamp": f"2025-09-29T{hour:02d}:00:00+00:00",
+                "sensors": {
+                    "DO": {
+                        "value": 12.555555 + (hour * 0.1),
+                        "type": "numeric",
+                        "status": "green"
+                    },
+                    "pH": {
+                        "value": 12.0 + (hour * 0.05),
+                        "type": "numeric",
+                        "status": "green"
+                    },
+                    "temperature": {
+                        "value": 15.0 + (hour * 0.2),
+                        "type": "numeric",
+                        "status": "yellow" if hour < 12 else "green"
+                    }
+                }
+            }
+            data.append(hour_data)
+        
+        # Write back to file
+        with open("data/graph_data.json", "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        
+        return {
+            "message": "Test data added successfully",
+            "added_records": 24,
+            "date": "2025-09-29"
+        }
+        
+    except Exception as e:
+        logging.error(f"Error adding test data: {e}")
+        raise HTTPException(status_code=500, detail=f"Error adding test data: {str(e)}")
 
+
+@router.post("/add-future-test-data")
+async def add_future_test_data():
+    """Add test data for tomorrow (September 30) for testing future data"""
+    try:
+        # Read existing data
+        with open("data/graph_data.json", "r", encoding="utf-8") as f:
+            data = json.load(f)
+        
+        # Add test data for September 30 (tomorrow)
+        for hour in range(0, 24):
+            hour_data = {
+                "id": f"graph_demo_future_{hour:03d}",
+                "pond_id": 1,
+                "timestamp": f"2025-09-30T{hour:02d}:00:00+00:00",
+                "sensors": {
+                    "DO": {
+                        "value": 8.0 + (hour * 0.3),
+                        "type": "numeric",
+                        "status": "green" if hour < 8 else "yellow" if hour < 16 else "red"
+                    },
+                    "pH": {
+                        "value": 6.5 + (hour * 0.1),
+                        "type": "numeric",
+                        "status": "green"
+                    },
+                    "temperature": {
+                        "value": 20.0 + (hour * 0.5),
+                        "type": "numeric",
+                        "status": "green" if hour < 12 else "yellow"
+                    }
+                }
+            }
+            data.append(hour_data)
+        
+        # Write back to file
+        with open("data/graph_data.json", "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        
+        return {
+            "message": "Future test data added successfully",
+            "added_records": 24,
+            "date": "2025-09-30"
+        }
+        
+    except Exception as e:
+        logging.error(f"Error adding future test data: {e}")
+        raise HTTPException(status_code=500, detail=f"Error adding future test data: {str(e)}")
+
+
+        
         
