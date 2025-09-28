@@ -116,8 +116,8 @@ async def receive_batch_sensor_data(
       "ColorWater": "red",
       "Mineral_1": 4800,
       "Mineral_2": 4800,
-      "Mineral_3": 4800,
-      "Mineral_4": 4800,
+      "Mineral_3": 150.5,
+      "Mineral_4": 200.0,
       "PicColorWater": "https://exampleUrl.com",
       "PicKungOnWater": "https://exampleUrl.com"
     }
@@ -142,6 +142,9 @@ async def receive_batch_sensor_data(
         if timestamp:
             try:
                 timestamp = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                # Ensure timezone-naive for consistent processing
+                if timestamp.tzinfo is not None:
+                    timestamp = timestamp.replace(tzinfo=None)
             except ValueError:
                 timestamp = datetime.utcnow()
         else:
@@ -220,15 +223,26 @@ async def receive_batch_sensor_data(
                     else:
                         # Handle Mineral_1-4 fields differently
                         if sensor_type.startswith('minerals_'):
-                            # Mineral_3-4: string values (true/false status) - check first
+                            # Mineral_3-4: float values (weight in grams) - check first
                             if sensor_type in ['minerals_3', 'minerals_4']:
                                 logger.info(f"Processing {sensor_type} with value: {value}")
-                                sensors_data[sensor_type] = {
-                                    'value': str(value),
-                                    'type': 'status',
-                                    'status': 'yellow' if str(value).lower() == 'true' else 'green'
-                                }
-                                logger.info(f"Result for {sensor_type}: {sensors_data[sensor_type]}")
+                                try:
+                                    numeric_value = float(value)
+                                    calculated_status = calculate_sensor_status('minerals', numeric_value)
+                                    sensors_data[sensor_type] = {
+                                        'value': numeric_value,
+                                        'type': 'numeric',
+                                        'status': calculated_status
+                                    }
+                                    logger.info(f"Result for {sensor_type}: {sensors_data[sensor_type]}")
+                                except (ValueError, TypeError):
+                                    # If not numeric, store as string with default status
+                                    sensors_data[sensor_type] = {
+                                        'value': str(value),
+                                        'type': 'string',
+                                        'status': 'info'
+                                    }
+                                    logger.info(f"Result for {sensor_type} (string): {sensors_data[sensor_type]}")
                             # Mineral_1-2: numeric values (weight in grams)
                             elif sensor_type in ['minerals_1', 'minerals_2']:
                                 try:
@@ -415,6 +429,9 @@ async def receive_batch_yorrkung_data(
         if timestamp:
             try:
                 timestamp = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                # Ensure timezone-naive for consistent processing
+                if timestamp.tzinfo is not None:
+                    timestamp = timestamp.replace(tzinfo=None)
             except ValueError:
                 timestamp = datetime.utcnow()
         else:
@@ -1199,7 +1216,13 @@ async def get_sensor_graph_data_simple(
         # Filter data by timeframe based on hours parameter
         if batches:
             # Sort by timestamp to ensure correct filtering
-            batches.sort(key=lambda x: datetime.fromisoformat(x['timestamp'].replace('Z', '+00:00')))
+            def batch_sort_key(x):
+                timestamp = datetime.fromisoformat(x['timestamp'].replace('Z', '+00:00'))
+                # Ensure timezone-naive for consistent sorting
+                if timestamp.tzinfo is not None:
+                    timestamp = timestamp.replace(tzinfo=None)
+                return timestamp
+            batches.sort(key=batch_sort_key)
             
             # Filter by time range based on timeframe
             end_time = datetime.now().replace(tzinfo=None)  # Make timezone-naive
@@ -1223,14 +1246,17 @@ async def get_sensor_graph_data_simple(
             for batch in batches:
                 try:
                     batch_time = datetime.fromisoformat(batch['timestamp'].replace('Z', '+00:00'))
-                    # Convert to timezone-naive for comparison
-                    batch_time_naive = batch_time.replace(tzinfo=None)
+                    # Ensure timezone-naive for comparison
+                    if batch_time.tzinfo is not None:
+                        batch_time_naive = batch_time.replace(tzinfo=None)
+                    else:
+                        batch_time_naive = batch_time
                     
                     # For 1D timeframe, ensure we only get today's data
                     if timeframe == "1D":
                         batch_date = batch_time_naive.date()
                         today_date = end_time.date()
-                        if batch_date == today_date and start_time <= batch_time_naive <= end_time:
+                        if batch_date == today_date:
                             filtered_batches.append(batch)
                     else:
                         if start_time <= batch_time_naive <= end_time:
@@ -1260,14 +1286,27 @@ async def get_sensor_graph_data_simple(
         
         # Process data for each sensor type
         sensors_data = {}
-        numeric_sensors = ['DO', 'pH', 'temperature', 'minerals']  # Removed 'shrimpSize'
+        numeric_sensors = ['DO', 'pH', 'temperature', 'minerals', 'shrimpSize']  # Added shrimpSize back
         
         # Parse requested sensor types
         requested_sensors = []
         if sensor_types:
             requested_sensors = [s.strip() for s in sensor_types.split(',') if s.strip()]
             # Filter to only include valid sensor types
+            logging.info(f"DEBUG: Before filtering - requested_sensors: {requested_sensors}")
+            logging.info(f"DEBUG: numeric_sensors: {numeric_sensors}")
+            logging.info(f"DEBUG: 'shrimpSize' in requested_sensors: {'shrimpSize' in requested_sensors}")
+            logging.info(f"DEBUG: 'shrimpSize' in numeric_sensors: {'shrimpSize' in numeric_sensors}")
+            logging.info(f"DEBUG: 'shrimpSize' == 'shrimpSize': {'shrimpSize' == 'shrimpSize'}")
+            logging.info(f"DEBUG: 'shrimpSize' in ['DO', 'pH', 'temperature', 'minerals', 'shrimpSize']: {'shrimpSize' in ['DO', 'pH', 'temperature', 'minerals', 'shrimpSize']}")
+            logging.info(f"DEBUG: 'shrimpSize' in requested_sensors: {'shrimpSize' in requested_sensors}")
+            logging.info(f"DEBUG: 'shrimpSize' in numeric_sensors: {'shrimpSize' in numeric_sensors}")
+            logging.info(f"DEBUG: 'shrimpSize' in requested_sensors: {'shrimpSize' in requested_sensors}")
+            logging.info(f"DEBUG: 'shrimpSize' in numeric_sensors: {'shrimpSize' in numeric_sensors}")
+            logging.info(f"DEBUG: 'shrimpSize' in requested_sensors: {'shrimpSize' in requested_sensors}")
+            logging.info(f"DEBUG: 'shrimpSize' in numeric_sensors: {'shrimpSize' in numeric_sensors}")
             requested_sensors = [s for s in requested_sensors if s in numeric_sensors]
+            logging.info(f"DEBUG: After filtering - requested_sensors: {requested_sensors}")
             logging.info(f"Parsed sensor_types parameter: '{sensor_types}' -> {requested_sensors}")
         else:
             # If no sensor_types specified, return all
@@ -1275,18 +1314,23 @@ async def get_sensor_graph_data_simple(
             logging.info(f"No sensor_types specified, returning all: {requested_sensors}")
         
         logging.info(f"Final requested sensor types: {requested_sensors}")
+        logging.info(f"DEBUG: numeric_sensors: {numeric_sensors}")
+        logging.info(f"DEBUG: 'shrimpSize' in numeric_sensors: {'shrimpSize' in numeric_sensors}")
+        logging.info(f"DEBUG: 'shrimpSize' == 'shrimpSize': {'shrimpSize' == 'shrimpSize'}")
+        logging.info(f"DEBUG: 'shrimpSize' in ['DO', 'pH', 'temperature', 'minerals', 'shrimpSize']: {'shrimpSize' in ['DO', 'pH', 'temperature', 'minerals', 'shrimpSize']}")
         
         # Filter out any unwanted sensor types from batches
         for batch in batches:
             if 'sensors' in batch:
-                # Remove shrimpsize and other unwanted sensor types
-                unwanted_sensors = ['shrimpsize', 'shrimpSize', 'size', 'Size']
+                # Remove unwanted sensor types (but keep shrimpSize)
+                unwanted_sensors = ['size', 'Size']  # Keep shrimpSize, shrimpsize
                 for unwanted in unwanted_sensors:
                     if unwanted in batch['sensors']:
                         del batch['sensors'][unwanted]
                         logging.info(f"Removed unwanted sensor type: {unwanted}")
         
         for sensor_type in requested_sensors:
+            logger.info(f"DEBUG: Processing sensor_type: {sensor_type}")
             # Determine unit first (outside of if-else)
             unit = None
             if sensor_type == 'temperature':
@@ -1297,27 +1341,49 @@ async def get_sensor_graph_data_simple(
                 unit = 'mg/L'
             elif sensor_type == 'pH':
                 unit = 'pH'
+            elif sensor_type == 'shrimpSize':
+                unit = 'cm'
             
             data_points = []
             values = []
             
-            for batch in batches:
-                if sensor_type in batch.get('sensors', {}):
-                    sensor_data = batch['sensors'][sensor_type]
-                    if sensor_data.get('type') == 'numeric':
+            # Special handling for shrimpSize - get data from ShrimpSizeStorage
+            if sensor_type == 'shrimpSize':
+                logger.info(f"DEBUG: Processing shrimpSize for pond {pond_id}, timeframe {timeframe}")
+                try:
+                    shrimp_size_storage = ShrimpSizeStorage()
+                    shrimp_batches = shrimp_size_storage.get_by_timeframe(pond_id, hours, timeframe)
+                    logger.info(f"DEBUG: Found {len(shrimp_batches)} shrimp size batches for pond {pond_id}, timeframe {timeframe}")
+                    
+                    for batch in shrimp_batches:
                         try:
-                            # Simple timestamp parsing
+                            # Parse timestamp
                             timestamp_str = batch.get('timestamp', '')
                             if timestamp_str:
                                 if timestamp_str.endswith('Z'):
                                     timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
                                 else:
                                     timestamp = datetime.fromisoformat(timestamp_str)
+                                # Ensure timezone-naive for consistent processing
+                                if timestamp.tzinfo is not None:
+                                    timestamp = timestamp.replace(tzinfo=None)
                             else:
                                 timestamp = datetime.now()
                             
-                            value = float(sensor_data.get('value', 0.0))
-                            status = sensor_data.get('status', 'green')
+                            # Get shrimp size value
+                            shrimp_size = batch.get('shrimp_size', 0.0)
+                            if isinstance(shrimp_size, (int, float)):
+                                value = float(shrimp_size)
+                            else:
+                                value = 0.0
+                            
+                            # Determine status based on value
+                            if value < 3.0:
+                                status = 'red'
+                            elif value < 4.0:
+                                status = 'yellow'
+                            else:
+                                status = 'green'
                             
                             data_points.append({
                                 'timestamp': timestamp.isoformat(),
@@ -1326,8 +1392,42 @@ async def get_sensor_graph_data_simple(
                             })
                             values.append(value)
                         except Exception as e:
-                            logger.warning(f"Error processing sensor data: {e}")
+                            logger.warning(f"Error processing shrimp size data: {e}")
                             continue
+                except Exception as e:
+                    logger.error(f"Error getting shrimp size data: {e}")
+            else:
+                # Regular sensor data processing
+                for batch in batches:
+                    if sensor_type in batch.get('sensors', {}):
+                        sensor_data = batch['sensors'][sensor_type]
+                        if sensor_data.get('type') == 'numeric':
+                            try:
+                                # Simple timestamp parsing
+                                timestamp_str = batch.get('timestamp', '')
+                                if timestamp_str:
+                                    if timestamp_str.endswith('Z'):
+                                        timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                                    else:
+                                        timestamp = datetime.fromisoformat(timestamp_str)
+                                    # Ensure timezone-naive for consistent processing
+                                    if timestamp.tzinfo is not None:
+                                        timestamp = timestamp.replace(tzinfo=None)
+                                else:
+                                    timestamp = datetime.now()
+                                
+                                value = float(sensor_data.get('value', 0.0))
+                                status = sensor_data.get('status', 'green')
+                                
+                                data_points.append({
+                                    'timestamp': timestamp.isoformat(),
+                                    'value': value,
+                                    'status': status
+                                })
+                                values.append(value)
+                            except Exception as e:
+                                logger.warning(f"Error processing sensor data: {e}")
+                                continue
             
             if data_points:
                 # For 1D timeframe, fill missing hours with 0.0 data
@@ -1337,9 +1437,13 @@ async def get_sensor_graph_data_simple(
                     
                     # Get existing hours from real data
                     for point in data_points:
-                        point_date = datetime.fromisoformat(point['timestamp'].replace('Z', '+00:00')).date()
+                        point_timestamp = datetime.fromisoformat(point['timestamp'].replace('Z', '+00:00'))
+                        # Ensure timezone-naive for comparison
+                        if point_timestamp.tzinfo is not None:
+                            point_timestamp = point_timestamp.replace(tzinfo=None)
+                        point_date = point_timestamp.date()
                         if point_date == today:
-                            hour = datetime.fromisoformat(point['timestamp'].replace('Z', '+00:00')).hour
+                            hour = point_timestamp.hour
                             existing_hours.add(hour)
                     
                     # Fill missing hours with 0.0 data
@@ -1353,7 +1457,13 @@ async def get_sensor_graph_data_simple(
                             })
                     
                     # Sort data points by timestamp
-                    data_points.sort(key=lambda x: datetime.fromisoformat(x['timestamp'].replace('Z', '+00:00')))
+                    def sort_key(x):
+                        timestamp = datetime.fromisoformat(x['timestamp'].replace('Z', '+00:00'))
+                        # Ensure timezone-naive for consistent sorting
+                        if timestamp.tzinfo is not None:
+                            timestamp = timestamp.replace(tzinfo=None)
+                        return timestamp
+                    data_points.sort(key=sort_key)
                 
                 # Debug logging
                 logging.info(f"API: Created {len(data_points)} data points for {sensor_type}")
@@ -1482,10 +1592,81 @@ async def get_shrimp_size_graph_data(
     try:
         # Get shrimp size data using ShrimpSizeStorage
         shrimp_size_storage = ShrimpSizeStorage()
-        batches = shrimp_size_storage.get_by_timeframe(pond_id, hours)
+        batches = shrimp_size_storage.get_by_timeframe(pond_id, hours, timeframe)
         
         # Debug logging
         logger.info(f"API: Found {len(batches)} shrimp size batches for pond {pond_id}")
+        
+        # Filter data by timeframe like other sensors
+        if batches:
+            # Sort by timestamp to ensure correct filtering
+            def batch_sort_key(x):
+                timestamp = datetime.fromisoformat(x['timestamp'].replace('Z', '+00:00'))
+                # Ensure timezone-naive for consistent sorting
+                if timestamp.tzinfo is not None:
+                    timestamp = timestamp.replace(tzinfo=None)
+                return timestamp
+            batches.sort(key=batch_sort_key)
+            
+            # Filter by time range based on timeframe
+            end_time = datetime.now().replace(tzinfo=None)  # Make timezone-naive
+            
+            # Adjust time range based on timeframe
+            if timeframe == "1D":
+                # For 1D, show only today (00:00 to 23:59:59)
+                start_time = end_time.replace(hour=0, minute=0, second=0, microsecond=0)
+                end_time = end_time.replace(hour=23, minute=59, second=59, microsecond=999999)
+            elif timeframe == "7D":
+                # For 7D, show last 7 days
+                start_time = end_time - timedelta(days=7)
+            elif timeframe == "30D":
+                # For 30D, show last 30 days
+                start_time = end_time - timedelta(days=30)
+            else:
+                # Default to hours-based filtering
+                start_time = end_time - timedelta(hours=hours)
+            
+            filtered_batches = []
+            for batch in batches:
+                try:
+                    batch_time = datetime.fromisoformat(batch['timestamp'].replace('Z', '+00:00'))
+                    # Ensure timezone-naive for comparison
+                    if batch_time.tzinfo is not None:
+                        batch_time_naive = batch_time.replace(tzinfo=None)
+                    else:
+                        batch_time_naive = batch_time
+                    
+                    # For 1D timeframe, ensure we only get today's data
+                    if timeframe == "1D":
+                        batch_date = batch_time_naive.date()
+                        today_date = end_time.date()
+                        if batch_date == today_date:
+                            filtered_batches.append(batch)
+                    else:
+                        if start_time <= batch_time_naive <= end_time:
+                            filtered_batches.append(batch)
+                except Exception as e:
+                    logging.warning(f"Error parsing timestamp {batch.get('timestamp')}: {e}")
+                    continue
+            
+            # Further filter for 7D and 30D to reduce data points
+            if timeframe == "7D":
+                # Keep only every 2nd hour for 7D, but ensure we include the latest data
+                if len(filtered_batches) > 0:
+                    # Always include the last batch (most recent data)
+                    last_batch = filtered_batches[-1]
+                    # Filter every 2nd batch, but keep the last one
+                    filtered_batches = [batch for i, batch in enumerate(filtered_batches[:-1]) if i % 2 == 0] + [last_batch]
+            elif timeframe == "30D":
+                # Keep only every 4th hour for 30D, but ensure we include the latest data
+                if len(filtered_batches) > 0:
+                    # Always include the last batch (most recent data)
+                    last_batch = filtered_batches[-1]
+                    # Filter every 4th batch, but keep the last one
+                    filtered_batches = [batch for i, batch in enumerate(filtered_batches[:-1]) if i % 4 == 0] + [last_batch]
+            
+            batches = filtered_batches
+            logging.info(f"API: Filtered to {len(batches)} shrimp size batches for timeframe {timeframe}")
         
         # Process data for shrimp size graph
         data_points = []
@@ -1500,6 +1681,9 @@ async def get_shrimp_size_graph_data(
                         timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
                     else:
                         timestamp = datetime.fromisoformat(timestamp_str)
+                    # Ensure timezone-naive for consistent processing
+                    if timestamp.tzinfo is not None:
+                        timestamp = timestamp.replace(tzinfo=None)
                 else:
                     timestamp = datetime.now()
                 
@@ -1529,16 +1713,10 @@ async def get_shrimp_size_graph_data(
                 logger.warning(f"Error processing shrimp size data: {e}")
                 continue
         
-        # If no data, create default data
+        # If no data, return empty data instead of creating default data
         if not data_points:
-            for i in range(min(hours, 24)):
-                timestamp = datetime.now() - timedelta(hours=i)
-                data_points.append({
-                    'timestamp': timestamp.isoformat(),
-                    'value': 2.0,  # Default shrimp size
-                    'status': 'yellow'
-                })
-                values.append(2.0)
+            # Return empty data structure to indicate no real data available
+            pass
         
         # Calculate statistics
         min_val = min(values) if values else 0.0

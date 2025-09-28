@@ -84,15 +84,28 @@ class ShrimpSizeStorage:
             logger.error(f"Error getting latest shrimp size batch for pond {pond_id}: {e}")
             return None
     
-    def get_by_timeframe(self, pond_id: int, hours: int = 24) -> List[Dict[str, Any]]:
+    def get_by_timeframe(self, pond_id: int, hours: int = 24, timeframe: str = "1D") -> List[Dict[str, Any]]:
         """Get shrimp size data for a specific pond within a timeframe"""
         try:
             pond_data = self.get_by_pond(pond_id)
             if not pond_data:
                 return []
             
-            # Filter by timeframe
-            cutoff_time = datetime.now().replace(tzinfo=None) - timedelta(hours=hours)
+            # Calculate cutoff time based on timeframe
+            now = datetime.now().replace(tzinfo=None)
+            if timeframe == "1D":
+                # For 1D, get data from today (00:00 to now)
+                cutoff_time = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            elif timeframe == "7D":
+                # For 7D, get data from last 7 days
+                cutoff_time = now - timedelta(days=7)
+            elif timeframe == "30D":
+                # For 30D, get data from last 30 days
+                cutoff_time = now - timedelta(days=30)
+            else:
+                # Default to hours-based filtering
+                cutoff_time = now - timedelta(hours=hours)
+            
             filtered_data = []
             
             for entry in pond_data:
@@ -106,8 +119,16 @@ class ShrimpSizeStorage:
                         
                         # Convert to timezone-naive for comparison
                         entry_time_naive = entry_time.replace(tzinfo=None)
-                        if entry_time_naive >= cutoff_time:
-                            filtered_data.append(entry)
+                        
+                        # For 1D timeframe, check if it's today's data
+                        if timeframe == "1D":
+                            entry_date = entry_time_naive.date()
+                            today_date = now.date()
+                            if entry_date == today_date:
+                                filtered_data.append(entry)
+                        else:
+                            if entry_time_naive >= cutoff_time:
+                                filtered_data.append(entry)
                 except Exception as e:
                     logger.warning(f"Error parsing timestamp for entry {entry.get('id', 'unknown')}: {e}")
                     continue
