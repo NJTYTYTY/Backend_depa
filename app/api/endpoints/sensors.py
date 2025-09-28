@@ -66,6 +66,10 @@ def calculate_sensor_status(sensor_type: str, value: float) -> str:
         'DO': {
             'yellow': [(3, 5)],
             'red': [(0, 2.9)]
+        },
+        'minerals': {
+            'yellow': [(50, 100)],  # Low mineral levels
+            'red': [(0, 49)]  # Very low mineral levels
         }
     }
     
@@ -210,24 +214,67 @@ async def receive_batch_sensor_data(
                             'status': str(value)  # Use the value as status
                         }
                     else:
-                        # These are numeric values (including Mineral_1-4)
-                        try:
-                            numeric_value = float(value)
-                            # For Mineral_1-4 fields, use 'minerals' sensor type for status calculation
-                            status_sensor_type = 'minerals' if sensor_type.startswith('minerals_') else sensor_type
-                            calculated_status = calculate_sensor_status(status_sensor_type, numeric_value)
-                            sensors_data[sensor_type] = {
-                                'value': numeric_value,
-                                'type': 'numeric',
-                                'status': calculated_status
-                            }
-                        except (ValueError, TypeError):
-                            # If not numeric, store as string
-                            sensors_data[sensor_type] = {
-                                'value': str(value),
-                                'type': 'string',
-                                'status': 'info'
-                            }
+                        # Handle Mineral_1-4 fields differently
+                        if sensor_type.startswith('minerals_'):
+                            # Mineral_3-4: string values (true/false status) - check first
+                            if sensor_type in ['minerals_3', 'minerals_4']:
+                                logger.info(f"Processing {sensor_type} with value: {value}")
+                                sensors_data[sensor_type] = {
+                                    'value': str(value),
+                                    'type': 'status',
+                                    'status': 'yellow' if str(value).lower() == 'true' else 'green'
+                                }
+                                logger.info(f"Result for {sensor_type}: {sensors_data[sensor_type]}")
+                            # Mineral_1-2: numeric values (weight in grams)
+                            elif sensor_type in ['minerals_1', 'minerals_2']:
+                                try:
+                                    numeric_value = float(value)
+                                    calculated_status = calculate_sensor_status('minerals', numeric_value)
+                                    sensors_data[sensor_type] = {
+                                        'value': numeric_value,
+                                        'type': 'numeric',
+                                        'status': calculated_status
+                                    }
+                                except (ValueError, TypeError):
+                                    # If not numeric, store as string
+                                    sensors_data[sensor_type] = {
+                                        'value': str(value),
+                                        'type': 'string',
+                                        'status': 'info'
+                                    }
+                            # Other minerals (fallback)
+                            else:
+                                try:
+                                    numeric_value = float(value)
+                                    calculated_status = calculate_sensor_status('minerals', numeric_value)
+                                    sensors_data[sensor_type] = {
+                                        'value': numeric_value,
+                                        'type': 'numeric',
+                                        'status': calculated_status
+                                    }
+                                except (ValueError, TypeError):
+                                    sensors_data[sensor_type] = {
+                                        'value': str(value),
+                                        'type': 'string',
+                                        'status': 'info'
+                                    }
+                        else:
+                            # Other numeric values
+                            try:
+                                numeric_value = float(value)
+                                calculated_status = calculate_sensor_status(sensor_type, numeric_value)
+                                sensors_data[sensor_type] = {
+                                    'value': numeric_value,
+                                    'type': 'numeric',
+                                    'status': calculated_status
+                                }
+                            except (ValueError, TypeError):
+                                # If not numeric, store as string
+                                sensors_data[sensor_type] = {
+                                    'value': str(value),
+                                    'type': 'status',
+                                    'status': 'yellow' if str(value).lower() == 'true' else 'green'
+                                }
         
         # Create batch record
         batch_data = {
