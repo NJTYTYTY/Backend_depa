@@ -509,6 +509,71 @@ async def receive_batch_yorrkung_data(
         yorrkung_storage = YorrKungStorage()
         stored_batch = yorrkung_storage.create(batch_data)
         
+        # Also store shrimp size data in graph_shrimpsize.json for graph visualization
+        logger.info(f"DEBUG: Checking for size_cm in sensors_data: {list(sensors_data.keys())}")
+        if 'size_cm' in sensors_data:
+            size_cm_value = sensors_data['size_cm'].get('value', 0.0)
+            logger.info(f"DEBUG: Found size_cm value: {size_cm_value}, type: {type(size_cm_value)}")
+            if isinstance(size_cm_value, (int, float)) and size_cm_value > 0:
+                shrimp_size_data = {
+                    "id": f"shrimp_size_{timestamp.strftime('%Y%m%d_%H%M%S_%f')}",
+                    "pond_id": pond_id,
+                    "timestamp": timestamp.isoformat(),
+                    "shrimp_size": float(size_cm_value)
+                }
+                
+                logger.info(f"DEBUG: Creating shrimp size data: {shrimp_size_data}")
+                
+                # Store in shrimp size storage for graph
+                try:
+                    shrimp_size_storage = ShrimpSizeStorage()
+                    logger.info(f"DEBUG: ShrimpSizeStorage created successfully")
+                    result = shrimp_size_storage.create(shrimp_size_data)
+                    logger.info(f"DEBUG: ShrimpSizeStorage.create result: {result}")
+                    logger.info(f"Stored shrimp size data for YorrKung batch {batch_id}: {size_cm_value}cm for pond {pond_id}")
+                except Exception as e:
+                    logger.error(f"DEBUG: Error in ShrimpSizeStorage.create: {e}")
+                    logger.error(f"DEBUG: Exception type: {type(e)}")
+                    import traceback
+                    logger.error(f"DEBUG: Traceback: {traceback.format_exc()}")
+            else:
+                logger.warning(f"DEBUG: size_cm value is not valid: {size_cm_value}")
+        else:
+            logger.warning(f"DEBUG: size_cm not found in sensors_data")
+            # Additional debug: check if Size_CM was processed correctly
+            logger.info(f"DEBUG: All sensors_data keys: {list(sensors_data.keys())}")
+            logger.info(f"DEBUG: All sensors_data values: {sensors_data}")
+            # Check if the original Size_CM field exists in request_data
+            if 'Size_CM' in request_data:
+                logger.info(f"DEBUG: Found Size_CM in request_data: {request_data['Size_CM']}")
+                # Try to process it directly
+                try:
+                    size_cm_value = float(request_data['Size_CM'])
+                    if size_cm_value > 0:
+                        shrimp_size_data = {
+                            "id": f"shrimp_size_{timestamp.strftime('%Y%m%d_%H%M%S_%f')}",
+                            "pond_id": pond_id,
+                            "timestamp": timestamp.isoformat(),
+                            "shrimp_size": float(size_cm_value)
+                        }
+                        
+                        logger.info(f"DEBUG: Creating shrimp size data from Size_CM: {shrimp_size_data}")
+                        
+                        # Store in shrimp size storage for graph
+                        try:
+                            shrimp_size_storage = ShrimpSizeStorage()
+                            logger.info(f"DEBUG: ShrimpSizeStorage created successfully (fallback)")
+                            result = shrimp_size_storage.create(shrimp_size_data)
+                            logger.info(f"DEBUG: ShrimpSizeStorage.create result (fallback): {result}")
+                            logger.info(f"Stored shrimp size data for YorrKung batch {batch_id}: {size_cm_value}cm for pond {pond_id}")
+                        except Exception as e:
+                            logger.error(f"DEBUG: Error in ShrimpSizeStorage.create (fallback): {e}")
+                            logger.error(f"DEBUG: Exception type: {type(e)}")
+                            import traceback
+                            logger.error(f"DEBUG: Traceback: {traceback.format_exc()}")
+                except (ValueError, TypeError) as e:
+                    logger.error(f"DEBUG: Error processing Size_CM directly: {e}")
+        
         logger.info(f"Stored YorrKung batch {batch_id} with {len(sensors_data)} sensors for pond {pond_id}")
         
         # Return success response

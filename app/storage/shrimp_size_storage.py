@@ -5,21 +5,31 @@ Manages shrimp size data for graph visualization
 
 import json
 import os
+from pathlib import Path
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 import logging
 
 logger = logging.getLogger(__name__)
 
+# Storage directory - use absolute path for Railway deployment
+STORAGE_DIR = Path(os.getenv("STORAGE_DIR", "data"))
+try:
+    STORAGE_DIR.mkdir(exist_ok=True)
+except Exception as e:
+    logging.warning(f"Could not create storage directory {STORAGE_DIR}: {e}")
+    # Fallback to current directory
+    STORAGE_DIR = Path(".")
+
 class ShrimpSizeStorage:
-    def __init__(self, data_file: str = "data/graph_shrimpsize.json"):
-        self.data_file = data_file
+    def __init__(self):
+        self.data_file = STORAGE_DIR / "graph_shrimpsize.json"
         self.ensure_data_file_exists()
     
     def ensure_data_file_exists(self):
         """Ensure the data file exists, create if it doesn't"""
-        if not os.path.exists(self.data_file):
-            os.makedirs(os.path.dirname(self.data_file), exist_ok=True)
+        if not self.data_file.exists():
+            self.data_file.parent.mkdir(parents=True, exist_ok=True)
             with open(self.data_file, 'w', encoding='utf-8') as f:
                 json.dump([], f, ensure_ascii=False, indent=2)
     
